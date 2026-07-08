@@ -142,14 +142,26 @@ def test_build_server_assembles_expected_tool_set():
     """build_server() (main()'s assembly logic, minus mcp.run) must yield a
     FastMCP named 'agent-bridge' whose tool set includes both a blmcp tool
     and Agent Bridge's own bridge tools."""
+    from blmcp.tools_helpers import connection
     import agent_bridge.bridge_server as bridge_server
 
-    mcp = bridge_server.build_server()
-    assert mcp.name == "agent-bridge"
+    # Capture globals before the patch is installed (via build_server()).
+    orig_get_connection_params = connection.get_connection_params
+    orig_active_target = bridge_server.RESOLVER.active_target
+    orig_active_pid = bridge_server.RESOLVER.active_pid
 
-    tools = asyncio.run(mcp.list_tools())
-    tool_names = {t.name for t in tools}
+    try:
+        mcp = bridge_server.build_server()
+        assert mcp.name == "agent-bridge"
 
-    assert "use_instance" in tool_names
-    assert "list_instances" in tool_names
-    assert "execute_blender_code" in tool_names
+        tools = asyncio.run(mcp.list_tools())
+        tool_names = {t.name for t in tools}
+
+        assert "use_instance" in tool_names
+        assert "list_instances" in tool_names
+        assert "execute_blender_code" in tool_names
+    finally:
+        # Restore the patched globals to prevent test isolation hazard.
+        connection.get_connection_params = orig_get_connection_params
+        bridge_server.RESOLVER.active_target = orig_active_target
+        bridge_server.RESOLVER.active_pid = orig_active_pid

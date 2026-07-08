@@ -27,7 +27,13 @@ def install_patch() -> None:
     connection.get_connection_params = patched_get_connection_params
 
 
-def main() -> int:
+def build_server():
+    """Assemble the agent-bridge FastMCP: patch the seam, auto-discover blmcp's
+    tools, then register Agent Bridge's own use_instance/list_instances.
+
+    Split out from main() so the coupling smoke test can exercise the exact
+    same discovery/registration path without starting a server (no mcp.run()).
+    """
     install_patch()
 
     import importlib
@@ -53,5 +59,10 @@ def main() -> int:
             mod.register(mcp)
 
     bridge_tools.install(mcp, RESOLVER)
+    return mcp
+
+
+def main() -> int:
+    mcp = build_server()
     mcp.run(transport="stdio")
     return 0

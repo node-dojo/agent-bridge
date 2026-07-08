@@ -15,6 +15,18 @@ def _norm(name: str) -> str:
     return name
 
 
+def _extract_port(entry: dict, target_stem: str) -> int:
+    """Extract port from registry entry, raising TargetError if malformed."""
+    try:
+        port = entry["port"]
+        return int(port)
+    except (KeyError, ValueError, TypeError) as e:
+        raise TargetError(
+            f"Registry entry for '{target_stem}' is malformed or incomplete: "
+            f"missing or invalid 'port' field."
+        ) from e
+
+
 def _describe(instances) -> str:
     if not instances:
         return "(no live Blender instances)"
@@ -64,7 +76,8 @@ class Resolver:
             # Default rule.
             if len(instances) == 1:
                 e = instances[0]
-                return e.get("host", "localhost"), int(e["port"])
+                stem = registry.stem_of(e)
+                return e.get("host", "localhost"), _extract_port(e, stem)
             if not instances:
                 raise TargetError(
                     "No live Blender instances. Open a .blend and start its "
@@ -86,4 +99,5 @@ class Resolver:
                 f"{_describe(matches)}. Re-pick with use_instance(target, pid=...)."
             )
         e = matches[0]
-        return e.get("host", "localhost"), int(e["port"])
+        stem = registry.stem_of(e)
+        return e.get("host", "localhost"), _extract_port(e, stem)

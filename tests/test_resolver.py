@@ -56,3 +56,22 @@ def test_sticky_survives_between_calls():
     r.set_target("assetdev")
     assert r.resolve() == ("localhost", 9878)
     assert r.resolve() == ("localhost", 9878)
+
+def test_resolve_malformed_entry_missing_port_raises_targeterror():
+    # Single live instance with no 'port' key — should raise TargetError, not KeyError
+    malformed = {"blender_pid": 1, "blendfile": "/x/resin.blend", "blendfile_stem": "resin"}
+    r = make([malformed])
+    with pytest.raises(R.TargetError) as ex:
+        r.resolve()
+    assert "resin" in str(ex.value)
+    assert "malformed" in str(ex.value).lower() or "port" in str(ex.value).lower()
+
+def test_resolve_sticky_match_missing_port_raises_targeterror():
+    # Two instances, set_target to one, but matched entry lacks 'port'
+    malformed = {"blender_pid": 2, "blendfile": "/x/assetdev.blend", "blendfile_stem": "assetdev"}
+    r = make([_inst(1, 9877, "resin"), malformed])
+    r.set_target("assetdev")
+    with pytest.raises(R.TargetError) as ex:
+        r.resolve()
+    assert "assetdev" in str(ex.value)
+    assert "malformed" in str(ex.value).lower() or "port" in str(ex.value).lower()

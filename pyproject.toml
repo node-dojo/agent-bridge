@@ -1,0 +1,22 @@
+[project]
+name = "agent-bridge"
+version = "0.1.0"
+description = "Route Claude agent Blender calls to the live instance named by its .blend file"
+requires-python = ">=3.12"
+dependencies = [
+  "blender-mcp @ git+https://projects.blender.org/lab/blender_mcp.git@98b0e49d98321d321c7e631389200f513f765d59#subdirectory=mcp",
+  "pyyaml",
+]
+
+[project.scripts]
+agent-bridge = "agent_bridge.bridge_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent_bridge"]

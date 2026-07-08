@@ -29,8 +29,29 @@ def install_patch() -> None:
 
 def main() -> int:
     install_patch()
-    # Register bridge-specific tools onto blmcp's mcp before it runs.
-    from . import bridge_tools
-    bridge_tools.install(RESOLVER)
+
+    import importlib
+    import os
+    import pkgutil
+    import yaml
+    from mcp.server.fastmcp import FastMCP
     import blmcp
-    return blmcp.main()
+    import blmcp.tools as tools_pkg
+    from . import bridge_tools
+
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(blmcp.__file__)), "data")
+    with open(os.path.join(data_dir, "prompts.yml"), encoding="utf-8") as fh:
+        prompts = yaml.safe_load(fh)
+
+    mcp = FastMCP("agent-bridge", instructions=str(prompts["initial_instructions"]))
+
+    for _importer, modname, _ispkg in pkgutil.iter_modules(tools_pkg.__path__):
+        if modname.endswith("_toolcode") or modname.startswith("_template_"):
+            continue
+        mod = importlib.import_module(f"blmcp.tools.{modname}")
+        if hasattr(mod, "register"):
+            mod.register(mcp)
+
+    bridge_tools.install(mcp, RESOLVER)
+    mcp.run(transport="stdio")
+    return 0

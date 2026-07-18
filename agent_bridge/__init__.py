@@ -5,6 +5,11 @@ instance by its .blend filename via the Agent Bridge MCP server."""
 __all__ = ("register", "unregister", "build_register_payload")
 
 import os
+import sys
+import shlex
+import shutil
+import tempfile
+import subprocess
 from pathlib import Path
 
 
@@ -19,10 +24,134 @@ def build_register_payload(pid: int, port: int, host: str, blendfile: str) -> di
     }
 
 
+# ---------------------------------------------------------------------------
+# Instructions discovery (bpy-free so it's testable/importable outside Blender)
+# ---------------------------------------------------------------------------
+
+# Filenames we treat as "agent instruction" documents.
+_INSTRUCTION_FILENAMES = ("CLAUDE.md", "AGENTS.md", "claude.md", "agents.md")
+
+# Directory of THIS add-on. Used to surface the Agent Bridge tier's own docs.
+_THIS_ADDON_DIR = Path(__file__).resolve().parent
+
+
+def _first_existing(paths):
+    for p in paths:
+        if p.exists() and p.is_file():
+            return p
+    return None
+
+
+def discover_instruction_files(project_dir: Path | None) -> list[dict]:
+    """Return a list of instruction-file records for the strict three-tier
+    hierarchy: Global → Agent Bridge → Project.
+
+    Each record: {'scope': 'global'|'agent_bridge'|'project', 'label': str, 'path': str}
+    """
+    home = Path.home()
+    found: list[dict] = []
+
+    # --- Global (user-level) ------------------------------------------------
+    global_candidates = [
+        home / ".claude" / "CLAUDE.md",
+        home / ".config" / "claude" / "CLAUDE.md",
+        home / "CLAUDE.md",
+        home / ".claude" / "AGENTS.md",
+        home / "AGENTS.md",
+    ]
+    for p in global_candidates:
+        if p.exists() and p.is_file():
+            found.append({"scope": "global", "label": str(p.relative_to(home)), "path": str(p)})
+
+    # --- Agent Bridge (this add-on's own docs) -----------------------------
+    # Only this add-on's directory — no walk of unrelated add-ons.
+    for name in _INSTRUCTION_FILENAMES:
+        candidate = _THIS_ADDON_DIR / name
+        if candidate.exists() and candidate.is_file():
+            found.append({
+                "scope": "agent_bridge",
+                "label": name,
+                "path": str(candidate),
+            })
+            break  # first hit wins; CLAUDE.md preferred over AGENTS.md
+
+    # --- Project (blend file directory + its .claude/) ---------------------
+    if project_dir is not None:
+        proj_candidates = [
+            project_dir / "CLAUDE.md",
+            project_dir / "AGENTS.md",
+            project_dir / ".claude" / "CLAUDE.md",
+            project_dir / ".claude" / "AGENTS.md",
+        ]
+        for p in proj_candidates:
+            if p.exists() and p.is_file():
+                try:
+                    label = str(p.relative_to(project_dir))
+                except ValueError:
+                    label = p.name
+                found.append({"scope": "project", "label": label, "path": str(p)})
+
+    return found
+
+
+# ---------------------------------------------------------------------------
+# Terminal / Claude launcher (bpy-free helpers)
+# ---------------------------------------------------------------------------
+
+def _build_primer_prompt(project_dir: Path,
+                        stem: str,
+                        pid: int | None,
+                        port: int | None,
+                        instructions: list[dict]) -> str:
+    """Build a concise system-prompt primer to pass to `claude --append-system-prompt`."""
+    lines = []
+    lines.append(
+        f"You are launched from the Blender project '{stem or '(unsaved)'}' at "
+        f"{project_dir}. Prioritize being useful for Blender + add-on work in this project."
+    )
+    if pid is not None and port is not None:
+        lines.append(
+            f"This Blender instance is registered with Agent Bridge as pid={pid} on port {port}. "
+            f"Route bpy calls through the agent-bridge MCP server targeting stem '{stem}'."
+        )
+    if instructions:
+        lines.append("Read these instruction docs before acting (globals first, then add-on, then project):")
+        for row in instructions:
+            lines.append(f"  - [{row['scope']}] {row['path']}")
+    lines.append(
+        "When you finish reading, state which docs you loaded and summarize the rules that apply to this session."
+    )
+    return "\n".join(lines)
+
+
+def _write_launch_command_file(project_dir: Path, primer: str) -> Path:
+    """Write a temporary .command file that cd's to the project and runs `claude`.
+
+    Using a .command file avoids AppleScript quoting hell and works whether the
+    user has `claude` on PATH or aliased in their shell rc (interactive login shell).
+    """
+    tmpdir = Path(tempfile.gettempdir())
+    script = tmpdir / f"agent_bridge_claude_{os.getpid()}.command"
+    # `exec $SHELL -ilc` ensures the user's PATH/aliases from .zshrc/.bashrc are loaded.
+    quoted_dir = shlex.quote(str(project_dir))
+    quoted_primer = shlex.quote(primer)
+    body = (
+        "#!/bin/bash\n"
+        f"cd {quoted_dir} || exit 1\n"
+        "echo '── Agent Bridge: launching Claude Code with primed context ──'\n"
+        "echo\n"
+        f"exec \"$SHELL\" -ilc 'claude --append-system-prompt {quoted_primer}'\n"
+    )
+    script.write_text(body)
+    script.chmod(0o755)
+    return script
+
+
 # --- Blender-only below (guarded so the module imports without bpy for tests) ---
 try:
     import bpy
     from bpy.types import Operator, Panel
+    from bpy.props import StringProperty
     _HAS_BPY = True
 except ImportError:
     _HAS_BPY = False
@@ -32,6 +161,10 @@ if _HAS_BPY:
     from . import serve_helpers as sh
 
     _PID = os.getpid()
+
+    # -----------------------------------------------------------------------
+    # Existing serve / stop operators
+    # -----------------------------------------------------------------------
 
     class AGENT_BRIDGE_OT_serve(Operator):
         bl_idname = "agent_bridge.serve"
@@ -72,6 +205,196 @@ if _HAS_BPY:
             self.report({"INFO"}, "Stopped serving.")
             return {"FINISHED"}
 
+    # -----------------------------------------------------------------------
+    # NEW: clipboard-copy for live-instance rows
+    # -----------------------------------------------------------------------
+
+    class AGENT_BRIDGE_OT_copy_instance(Operator):
+        bl_idname = "agent_bridge.copy_instance"
+        bl_label = "Copy Instance Line"
+        bl_description = "Copy this instance's identifier line to the clipboard"
+        bl_options = {"REGISTER", "INTERNAL"}
+
+        payload: StringProperty(default="")  # type: ignore[valid-type]
+
+        def execute(self, context):
+            if not self.payload:
+                self.report({"WARNING"}, "Nothing to copy.")
+                return {"CANCELLED"}
+            context.window_manager.clipboard = self.payload
+            # Also emit a short user-facing hint in the info bar.
+            short = self.payload if len(self.payload) < 60 else self.payload[:57] + "…"
+            self.report({"INFO"}, f"Copied: {short}")
+            return {"FINISHED"}
+
+    # -----------------------------------------------------------------------
+    # NEW: Launch a Claude Code terminal primed for this project
+    # -----------------------------------------------------------------------
+
+    class AGENT_BRIDGE_OT_launch_claude(Operator):
+        bl_idname = "agent_bridge.launch_claude"
+        bl_label = "Launch Claude Terminal Here"
+        bl_description = (
+            "Open a Terminal at this .blend's project directory and start Claude Code with a "
+            "primed system prompt (global rules + add-on docs + local CLAUDE.md)."
+        )
+        bl_options = {"REGISTER"}
+
+        def execute(self, context):
+            del context
+            blendfile = bpy.data.filepath or ""
+            if blendfile:
+                project_dir = Path(blendfile).parent
+                stem = Path(blendfile).stem
+            else:
+                project_dir = Path.home()
+                stem = ""
+            entry = reg.read(_PID)
+            port = entry.get("port") if entry else None
+            instructions = discover_instruction_files(project_dir)
+            primer = _build_primer_prompt(project_dir, stem, _PID, port, instructions)
+
+            if sys.platform == "darwin":
+                try:
+                    script = _write_launch_command_file(project_dir, primer)
+                    subprocess.Popen(["open", "-a", "Terminal", str(script)])
+                    self.report(
+                        {"INFO"},
+                        f"Launched Claude in Terminal at {project_dir} ({len(instructions)} doc(s) referenced)."
+                    )
+                    return {"FINISHED"}
+                except Exception as ex:  # pylint: disable=broad-exception-caught
+                    self.report({"ERROR"}, f"Failed to launch Terminal: {ex}")
+                    return {"CANCELLED"}
+
+            # Non-mac fallback: dump the primer to a file and open its folder.
+            try:
+                script = _write_launch_command_file(project_dir, primer)
+                self.report(
+                    {"WARNING"},
+                    f"Terminal auto-launch is macOS-only. A launch script was written to {script}."
+                )
+                # Best-effort: try common Linux terminals.
+                for term in ("x-terminal-emulator", "gnome-terminal", "konsole", "xterm"):
+                    if shutil.which(term):
+                        subprocess.Popen([term, "-e", "bash", str(script)])
+                        break
+                return {"FINISHED"}
+            except Exception as ex:  # pylint: disable=broad-exception-caught
+                self.report({"ERROR"}, f"Could not prepare launch script: {ex}")
+                return {"CANCELLED"}
+
+    # -----------------------------------------------------------------------
+    # NEW: Instruction-file open helpers
+    # -----------------------------------------------------------------------
+
+    def _load_into_blender_text_editor(filepath: str) -> str:
+        """Load an external text file into Blender and, if possible, show it in
+        an existing Text Editor area. Returns the Text datablock name."""
+        # If already loaded (by filepath), reuse.
+        existing = None
+        try:
+            for t in bpy.data.texts:
+                if t.filepath and Path(t.filepath).resolve() == Path(filepath).resolve():
+                    existing = t
+                    break
+        except OSError:
+            existing = None
+        text_db = existing or bpy.data.texts.load(filepath, internal=False)
+
+        # Try to point an already-open text editor at it.
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == "TEXT_EDITOR":
+                    for space in area.spaces:
+                        if space.type == "TEXT_EDITOR":
+                            space.text = text_db
+                    return text_db.name
+        return text_db.name
+
+    class AGENT_BRIDGE_OT_open_in_blender_text(Operator):
+        bl_idname = "agent_bridge.open_in_blender_text"
+        bl_label = "Open in Blender Text Editor"
+        bl_description = "Load this file into a Blender Text datablock (and target any open Text Editor at it)"
+        bl_options = {"REGISTER", "INTERNAL"}
+
+        filepath: StringProperty(subtype="FILE_PATH", default="")  # type: ignore[valid-type]
+
+        def execute(self, context):
+            del context
+            if not self.filepath or not Path(self.filepath).exists():
+                self.report({"ERROR"}, "File not found.")
+                return {"CANCELLED"}
+            try:
+                name = _load_into_blender_text_editor(self.filepath)
+            except Exception as ex:  # pylint: disable=broad-exception-caught
+                self.report({"ERROR"}, f"Load failed: {ex}")
+                return {"CANCELLED"}
+            self.report({"INFO"}, f"Loaded '{name}' — open a Text Editor area to view it.")
+            return {"FINISHED"}
+
+    class AGENT_BRIDGE_OT_open_in_default_editor(Operator):
+        bl_idname = "agent_bridge.open_in_default_editor"
+        bl_label = "Open in Default Markdown Editor"
+        bl_description = "Open this file in the system's default application for its extension"
+        bl_options = {"REGISTER", "INTERNAL"}
+
+        filepath: StringProperty(subtype="FILE_PATH", default="")  # type: ignore[valid-type]
+
+        def execute(self, context):
+            del context
+            if not self.filepath or not Path(self.filepath).exists():
+                self.report({"ERROR"}, "File not found.")
+                return {"CANCELLED"}
+            try:
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", self.filepath])
+                elif sys.platform == "win32":
+                    os.startfile(self.filepath)  # type: ignore[attr-defined]
+                else:
+                    subprocess.Popen(["xdg-open", self.filepath])
+            except Exception as ex:  # pylint: disable=broad-exception-caught
+                self.report({"ERROR"}, f"Open failed: {ex}")
+                return {"CANCELLED"}
+            self.report({"INFO"}, f"Opened {Path(self.filepath).name} in default app.")
+            return {"FINISHED"}
+
+    class AGENT_BRIDGE_OT_reveal_folder(Operator):
+        bl_idname = "agent_bridge.reveal_folder"
+        bl_label = "Reveal Enclosing Folder"
+        bl_description = "Open the folder that contains this file in the system file browser"
+        bl_options = {"REGISTER", "INTERNAL"}
+
+        filepath: StringProperty(subtype="FILE_PATH", default="")  # type: ignore[valid-type]
+
+        def execute(self, context):
+            del context
+            p = Path(self.filepath) if self.filepath else None
+            if not p or not p.exists():
+                self.report({"ERROR"}, "Path not found.")
+                return {"CANCELLED"}
+            try:
+                if sys.platform == "darwin":
+                    # -R reveals the file in Finder rather than opening the folder generically.
+                    subprocess.Popen(["open", "-R", str(p)])
+                elif sys.platform == "win32":
+                    subprocess.Popen(["explorer", "/select,", str(p)])
+                else:
+                    subprocess.Popen(["xdg-open", str(p.parent)])
+            except Exception as ex:  # pylint: disable=broad-exception-caught
+                self.report({"ERROR"}, f"Reveal failed: {ex}")
+                return {"CANCELLED"}
+            self.report({"INFO"}, f"Revealed {p.name}.")
+            return {"FINISHED"}
+
+    # -----------------------------------------------------------------------
+    # Panel
+    # -----------------------------------------------------------------------
+
+    _SCOPE_ICON = {"global": "WORLD", "agent_bridge": "PLUGIN", "project": "FILE_BLEND"}
+    _SCOPE_LABEL = {"global": "Global", "agent_bridge": "Agent Bridge", "project": "Project"}
+    _SCOPE_ORDER = ("global", "agent_bridge", "project")
+
     class AGENT_BRIDGE_PT_panel(Panel):
         bl_idname = "AGENT_BRIDGE_PT_panel"
         bl_label = "Agent Bridge"
@@ -83,19 +406,111 @@ if _HAS_BPY:
             del context
             layout = self.layout
             entry = reg.read(_PID)
+
+            # --- Serve / stop -------------------------------------------------
             if entry:
-                layout.label(text=f"Serving :{entry.get('port')}", icon="CHECKMARK")
+                row = layout.row(align=True)
+                row.label(text=f"Serving :{entry.get('port')}", icon="CHECKMARK")
+                row.operator("agent_bridge.stop", text="", icon="UNLINKED")
                 layout.label(text=f"As: {entry.get('blendfile_stem') or '(unsaved)'}")
-                layout.operator("agent_bridge.stop", icon="UNLINKED")
             else:
                 layout.operator("agent_bridge.serve", icon="LINKED")
+
+            # --- Live instances (click a row to copy it) ---------------------
             layout.separator()
             box = layout.box()
-            box.label(text="Live instances (agents can target):", icon="OUTLINER")
-            for i in reg.live_instances():
-                box.label(text=f"{reg.stem_of(i)}  :{i.get('port')}  pid{i.get('blender_pid')}")
+            box.label(text="Live instances (click to copy):", icon="OUTLINER")
+            instances = reg.live_instances()
+            if not instances:
+                box.label(text="(none registered)", icon="DOT")
+            else:
+                for i in instances:
+                    stem = reg.stem_of(i) or "(unsaved)"
+                    port = i.get("port")
+                    pid = i.get("blender_pid")
+                    line = f"{stem}  :{port}  pid{pid}"
+                    row = box.row(align=True)
+                    op = row.operator(
+                        "agent_bridge.copy_instance",
+                        text=line,
+                        icon="COPYDOWN",
+                        emboss=True,
+                    )
+                    op.payload = line
 
-    _classes = (AGENT_BRIDGE_OT_serve, AGENT_BRIDGE_OT_stop, AGENT_BRIDGE_PT_panel)
+            # --- Launch Claude Code terminal ---------------------------------
+            layout.separator()
+            launch_box = layout.box()
+            launch_box.label(text="Claude Code", icon="CONSOLE")
+            blendfile = bpy.data.filepath or ""
+            proj_row = launch_box.row()
+            proj_row.enabled = bool(blendfile)
+            proj_row.operator(
+                "agent_bridge.launch_claude",
+                text="Launch Terminal Here",
+                icon="PLAY",
+            )
+            if not blendfile:
+                launch_box.label(text="Save the .blend first.", icon="INFO")
+            else:
+                launch_box.label(
+                    text=f"@ {Path(blendfile).parent.name}/",
+                    icon="FILE_FOLDER",
+                )
+
+            # --- Instruction docs --------------------------------------------
+            layout.separator()
+            instr_box = layout.box()
+            instr_box.label(text="Instructions (system prompts):", icon="TEXT")
+            project_dir = Path(blendfile).parent if blendfile else None
+            docs = discover_instruction_files(project_dir)
+            if not docs:
+                instr_box.label(text="No CLAUDE.md / AGENTS.md found.", icon="DOT")
+                instr_box.label(text="Drop one in the .blend's folder.", icon="INFO")
+            else:
+                # Group by scope in a stable order (Global → Agent Bridge → Project).
+                for scope in _SCOPE_ORDER:
+                    scope_docs = [d for d in docs if d["scope"] == scope]
+                    if not scope_docs:
+                        continue
+                    header = instr_box.row()
+                    header.label(
+                        text=_SCOPE_LABEL[scope],
+                        icon=_SCOPE_ICON[scope],
+                    )
+                    for d in scope_docs:
+                        col = instr_box.column(align=True)
+                        col.label(text=d["label"], icon="DOT")
+                        btn_row = col.row(align=True)
+                        op1 = btn_row.operator(
+                            "agent_bridge.open_in_blender_text",
+                            text="Blender",
+                            icon="WORDWRAP_ON",
+                        )
+                        op1.filepath = d["path"]
+                        op2 = btn_row.operator(
+                            "agent_bridge.open_in_default_editor",
+                            text="Editor",
+                            icon="GREASEPENCIL",
+                        )
+                        op2.filepath = d["path"]
+                        op3 = btn_row.operator(
+                            "agent_bridge.reveal_folder",
+                            text="Folder",
+                            icon="FILE_FOLDER",
+                        )
+                        op3.filepath = d["path"]
+
+    _classes = (
+        AGENT_BRIDGE_OT_serve,
+        AGENT_BRIDGE_OT_stop,
+        AGENT_BRIDGE_OT_copy_instance,
+        AGENT_BRIDGE_OT_launch_claude,
+        AGENT_BRIDGE_OT_open_in_blender_text,
+        AGENT_BRIDGE_OT_open_in_default_editor,
+        AGENT_BRIDGE_OT_reveal_folder,
+        AGENT_BRIDGE_PT_panel,
+    )
 
     def register():
         for cls in _classes:

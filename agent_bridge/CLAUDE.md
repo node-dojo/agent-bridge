@@ -2,25 +2,28 @@
 
 This is the **Agent Bridge** layer of a three-tier instruction hierarchy
 (**Global → Agent Bridge → Project**). Rules here apply to any Blender
-session where the Agent Bridge add-on is serving, and take precedence over
+session where the Agent Bridge add-on is serving. They take precedence over
 Global rules but yield to Project rules when they conflict.
 
-Only put things in this file that are:
+Everything in this file is either:
 
-1. Specific to how Agent Bridge itself works, or
-2. Cross-cutting knowledge about the user's Blender add-on ecosystem that
-   every session should share (canonical repo locations, vendor
-   relationships, etc.).
+- **[POLICY]** — a rule, deliberate, not derivable from filesystem state. Trust unless changed here.
+- **[LIVE: `<cmd>`]** — a claim that must be verified at session start; run the command, use its output.
+- **[HISTORICAL]** — for context; may be stale. Do not rely on for action.
 
-Anything project-specific belongs in the project's own `CLAUDE.md`; anything
-truly universal belongs in the global doc.
+If you find yourself hardcoding a path from this file into new code, **stop**
+and use the discovery process instead. This doc is a set of rules for
+finding the world, not a snapshot of it.
+
+Assumes: Blender 5.x extensions (manifest-based), macOS filesystem,
+`$SHELL`-provided PATH. On a different Blender major or OS, treat structural
+claims as suggestions and verify.
 
 ---
 
-## Domain expertise to bring by default
+## Domain expertise to bring by default  [POLICY]
 
-Every session under Agent Bridge should assume the user is working at the
-intersection of:
+Every session under Agent Bridge should assume work at the intersection of:
 
 - **CGI** — Blender-first, real-time and offline rendering, Eevee & Cycles,
   glTF/USD pipelines, Verge3D interop.
@@ -41,111 +44,131 @@ gloss it once.
 
 ---
 
-## Canonical codebases (the drift map)
+## Anchor paths — the only stable references  [POLICY]
 
-The rule for every entry below: **edit at the canonical path**, sync to
-downstream copies via the documented tool, never edit the vendored/installed
-copies directly.
+Every path claim resolves through these env vars. A folder rename or
+machine migration is a one-var edit; do not hardcode absolute paths
+downstream of this doc.
 
-### Agent Bridge (this add-on)
+| Env var                     | Default                                                                                             | What lives there                            |
+|-----------------------------|-----------------------------------------------------------------------------------------------------|---------------------------------------------|
+| `$NO3D_PROJECTS_ROOT`       | `$HOME/Projects`                                                                                    | Add-on and code repos                       |
+| `$NO3D_MONOREPO`            | `$HOME/Projects/no3d-asset-developer`                                                               | No3d Dev monorepo (vendor.toml lives here)  |
+| `$NO3D_BLEND_PROJECTS_ROOT` | `$HOME/Library/CloudStorage/Dropbox/Caveman Creative/THE WELL_Digital Assets/THE WELL_play files`   | Blender `.blend` project files              |
+| `$VAULT_001`                | `$HOME/Vault_001`                                                                                   | Notes vault; ship log lives here            |
+| `$AGENT_BRIDGE_SRC`         | `$HOME/Projects/agent-bridge/agent_bridge`                                                          | This add-on's canonical source              |
 
-- **Canonical source**: `~/Projects/agent-bridge/agent_bridge/`
-  - Git: local repo, branch `master`, no remote yet. Latest commit
-    `f6d1b30 docs: handoff document` (as of 2026-07-08).
-  - `HANDOFF.md` in the repo root has the current state + architecture +
-    task list.
-- **Installed copy** (Blender loads this): `~/Library/verge3d_blender/addons/agent_bridge/`
-- **Sync policy**: currently these are separately-maintained copies.
-  Preferred long-term fix: symlink installed → canonical
-  (`ln -s ~/Projects/agent-bridge/agent_bridge ~/Library/verge3d_blender/addons/agent_bridge`).
-  Until that's in place, mirror any edit made at the install path back to the
-  source repo (and commit) before ending a session.
-
-### No3d Dev — the active monorepo
-
-- **Path**: `~/Projects/no3d-asset-developer/`
-- **Git**: `github.com/node-dojo/no3d-dev.git` @ `main`
-- **Read first**: `~/Projects/no3d-asset-developer/AGENTS.md` — that file is
-  authoritative for anything inside this repo. Do not restate its rules
-  here; this doc only points to it.
-- **Also**: `README.md`, `HANDOFF.md` for state; `docs/` for architecture.
-- **Tooling**:
-  - `tools/ship.sh <extension_id> <version> [--notes ...] [--sync-vendor] [--dry-run]`
-    — the ship pipeline (bump → build → prune → publish → git tag → vault
-    ship-log append).
-  - `tools/vendor_sync.sh <extension_id> | --all [--dry-run]` — pull the
-    canonical upstream source of a vendored extension into
-    `extensions/<name>/` before shipping.
-  - `vendor.toml` — declares which sub-extensions are vendored and from
-    where.
-
-### Sub-extensions inside the monorepo
-
-Path: `~/Projects/no3d-asset-developer/extensions/<name>/`
-
-- **`no3d_asset_developer`** (v4.0.1) — **authored in place** in the
-  monorepo. This is the backend / internal-facing developer suite: asset
-  packaging, library management, personal WIP features that may migrate to
-  the public product.
-- **`no3d_camera_utilities`** (v1.0.0) — **vendored**, not authored in
-  place. Canonical source is a separate repo (see next section). To pick up
-  upstream changes:
-  ```
-  ~/Projects/no3d-asset-developer/tools/vendor_sync.sh no3d_camera_utilities
-  ```
-  Never edit inside `extensions/no3d_camera_utilities/` — the sync will
-  clobber it.
-
-### Canonical source repos for vendored extensions
-
-- **no3d_camera_utilities**
-  - Path: `~/Projects/No3d Camera Utilities/`
-  - Git: `github.com/node-dojo/no3d-camera-utilities.git` @ `main`
-  - **Edit here.** Bump version in `blender_manifest.toml`, commit, push,
-    then run `vendor_sync.sh` inside the monorepo to pull it in.
-
-### Publication target (public product)
-
-- **no3d-tools-addon** — `~/Projects/no3d-tools-addon/`
-  - The user-facing flagship at **no3dtools.com**.
-  - No git remote at the moment; publication mechanism lives elsewhere in
-    the workflow. Verify with `git -C ~/Projects/no3d-tools-addon remote -v`
-    before assuming anything.
-  - Features migrate here from No3d Dev when production-ready. **Do not
-    author new features directly here** — start in the monorepo, promote.
-
-### Archived / inactive
-
-- `~/Projects/_archive/no3d-tools-wip/` — WIP that was parked in June 2026,
-  git-initialized on archive for preservation. Not active; do not use as a
-  reference for new work. If any of its ideas (`align.py`, `make_spin.py`,
-  `toolbox.py`) become relevant again, resurrect them as a branch inside
-  the monorepo, not as a floating folder.
-
-### Drift-check ritual
-
-Before making non-trivial edits to any add-on:
-
-```
-git -C <canonical_path> status
-git -C <canonical_path> log --oneline -5
-```
-
-If there's uncommitted or unpushed work, ask the user before overwriting.
-If in doubt about "which copy is canonical," this file's map is authoritative
-— consult it first.
+The Agent Bridge add-on's `resolve_anchors()` in `__init__.py` is the
+runtime source of truth for these — call it from Python if you need the
+resolved values programmatically.
 
 ---
 
-## How Agent Bridge itself works
+## Session-start ritual  [POLICY]
 
-**Purpose**: let external Claude agents target a specific Blender instance
-by its `.blend` filename, even when many Blender processes are open.
+Before making any non-trivial change, run this ritual (or trigger it from
+the N-panel's **Refresh Drift Map** button, which does the equivalent):
 
-**Registry**: JSON files at `~/.blender-pairs/<pid>.json`. Each running
-Blender that has clicked "Serve to Agents" in the N-panel writes its own
-entry. Schema (see `registry.py` and `build_register_payload` in
-`__init__.py`):
+1. **Anchors present?** — expand each env var above; confirm the path
+   exists. Missing = flag before proceeding.
+2. **Enumerate current add-on repos**:
+   ```
+   find "$NO3D_PROJECTS_ROOT" -maxdepth 4 -name blender_manifest.toml \
+     -not -path '*/_archive/*' -not -path '*/.*'
+   ```
+   For each result's directory, gather:
+   ```
+   git -C <repo_root> remote -v
+   git -C <repo_root> symbolic-ref --short HEAD
+   git -C <repo_root> log --oneline -3
+   git -C <repo_root> status --short
+   ```
+3. **Read vendor relationships** — parse
+   `$NO3D_MONOREPO/vendor.toml`. Any extension listed there is
+   **vendored**: its canonical source is the `source` URL at the pinned
+   `ref`. The copy inside `$NO3D_MONOREPO/extensions/<id>/` is downstream —
+   never edit it in place; `vendor_sync.sh` will clobber the changes.
+4. **List recent `.blend` projects**:
+   ```
+   find "$NO3D_BLEND_PROJECTS_ROOT" -maxdepth 3 -name '*.blend' \
+     -print0 | xargs -0 stat -f '%m %N' | sort -rn | head -20
+   ```
+   Useful when the current session's blend is unfamiliar and you need to
+   know what neighbors exist.
+5. **List asset libraries** configured in the running Blender:
+   ```python
+   import bpy
+   for lib in bpy.context.preferences.filepaths.asset_libraries:
+       print(lib.name, lib.path)
+   ```
+   Or, from a Python API session: use the `_asset_libraries()` helper in
+   `agent_bridge/__init__.py`.
+
+The **Refresh Drift Map** operator (`bpy.ops.agent_bridge.refresh_drift_map()`)
+runs all of this and writes a timestamped markdown report to a Blender Text
+datablock named `agent-bridge:drift-map` (and copies it to the clipboard).
+Prefer that button over doing it by hand — the report is what should end up
+in your context anyway.
+
+---
+
+## Rules for interpreting the drift map  [POLICY]
+
+Classify every add-on repo you discover using these rules, in order:
+
+1. **Vendored** — its `id` (from `blender_manifest.toml`) appears in
+   `$NO3D_MONOREPO/vendor.toml`. Canonical source is the URL at `ref`; the
+   local copy is a mirror. **Never edit the mirror.** Bump versions in the
+   canonical repo, commit, push, then `tools/vendor_sync.sh <id>` from the
+   monorepo.
+2. **Authored-in-place inside the monorepo** — under
+   `$NO3D_MONOREPO/extensions/` but NOT in `vendor.toml`. Edit here directly.
+3. **Monorepo root itself** — has both `vendor.toml` AND `extensions/`.
+   Read its `AGENTS.md` first (it is the authoritative doc for anything in
+   that repo — do not restate its rules in this file).
+4. **Standalone canonical repo** — outside the monorepo, with a git remote
+   AND appears as a `source` in vendor.toml. This is where you edit
+   canonically. After bumping, run `vendor_sync` inside the monorepo.
+5. **Standalone product / publication target** — outside the monorepo, may
+   or may not have a git remote, not referenced by vendor.toml. The
+   user-facing published add-on. Features migrate here from No3d Dev when
+   production-ready; new features should not be authored here directly.
+6. **Archived** — anything under any `_archive/` directory. Do not use as a
+   reference for new work. If an idea in one is relevant, resurrect it as a
+   branch inside the monorepo, not as a floating folder.
+7. **Non-git scratch** — a manifest-bearing directory with no git repo
+   above it. Treat with suspicion; ask before writing to it.
+
+**Drift red flags** to surface to the user:
+
+- Any repo with `git status --short` output (uncommitted changes) when
+  they said they were "done."
+- Any vendored extension whose local copy differs from what
+  `vendor_sync.sh --dry-run` would install (upstream advanced).
+- Version-string mismatch between two copies of the same add-on
+  (canonical vs. vendored vs. installed).
+- The Agent Bridge install path vs. the source repo diverging.
+
+---
+
+## This add-on itself  [POLICY]
+
+- **Canonical source**: `$AGENT_BRIDGE_SRC`
+- **Installed copy** (Blender loads this): `$HOME/Library/verge3d_blender/addons/agent_bridge/`
+
+Sync policy: currently separate copies. Preferred fix — symlink installed →
+canonical:
+
+```
+ln -s "$AGENT_BRIDGE_SRC" \
+   "$HOME/Library/verge3d_blender/addons/agent_bridge"
+```
+
+Until that's in place, mirror any edit made at the install path back to the
+source repo (and commit) before ending a session.
+
+**Registry** (`registry.py`): JSON files at `~/.blender-pairs/<pid>.json`,
+one per serving Blender. Schema per `build_register_payload`:
 
 ```json
 {
@@ -158,47 +181,25 @@ entry. Schema (see `registry.py` and `build_register_payload` in
 }
 ```
 
-- **Serve**: click *Serve to Agents* → starts the official Blender MCP
-  server on a free port in `9876–9999` → writes the registry entry.
-- **Stop**: click *Stop Serving* → stops the MCP server → removes the
-  registry file.
-- **GC**: `registry.live_instances()` prunes entries whose pid is no longer
-  alive before returning the list.
-- **Targeting**: the standalone `agent-bridge` MCP process (outside Blender)
-  reads the registry and routes agent bpy calls to the matching entry by
-  `.blend` stem.
+- Serve: N-panel *Serve to Agents* → starts official Blender MCP on a free
+  port in `9876–9999` → writes the registry entry.
+- Stop: *Stop Serving* → stops MCP → removes the file.
+- GC: `registry.live_instances()` prunes dead-pid entries on read.
+- Target: the standalone `agent-bridge` MCP process (outside Blender)
+  routes agent bpy calls to the matching entry by `.blend` stem.
 
-**Key files** (both source repo and installed copy have the same layout):
+**Key files** (both source and installed copy have the same layout):
 
-- `__init__.py` — Blender-side operators + N-panel (this doc's discovery
-  helper `discover_instruction_files` lives here).
+- `__init__.py` — Blender-side operators + N-panel; anchor / discovery
+  helpers live here (`resolve_anchors`, `discover_addon_repos`,
+  `discover_blend_projects`, `discover_instruction_files`).
 - `registry.py` — bpy-free registry read/write/GC. Runs both in Blender and
   in the standalone MCP subprocess.
-- `serve_helpers.py` — port allocation + official MCP add-on start/stop
-  glue.
+- `serve_helpers.py` — port allocation + official MCP add-on start/stop.
 - `bridge_server.py`, `bridge_tools.py`, `resolver.py` — standalone MCP
-  server side (bpy-free; not exercised inside Blender).
+  server side (bpy-free; unused inside Blender).
 
----
-
-## Editing / reloading this add-on
-
-**Golden rule**: edit at the canonical source
-(`~/Projects/agent-bridge/agent_bridge/`), sync to install, hot-reload in
-Blender. If you edit at the install path directly, mirror back to the source
-repo and commit before ending the session — otherwise the next `ship` or the
-next dev session sees stale code.
-
-**Sync from source to install** (manual, until a symlink is in place):
-
-```
-rsync -a --delete \
-  ~/Projects/agent-bridge/agent_bridge/ \
-  ~/Library/verge3d_blender/addons/agent_bridge/
-```
-
-**Hot-reload inside a running Blender** (works from the Agent Bridge MCP or
-Blender's Python console):
+**Hot-reload** after editing (from the Python console or MCP):
 
 ```python
 import bpy, sys
@@ -210,32 +211,58 @@ for name in list(sys.modules):
 bpy.ops.preferences.addon_enable(module=addon_id)
 ```
 
-**Manifest changes** (`blender_manifest.toml` — version, permissions,
-dependencies): a hot-reload will not pick these up. Do a full extension
-re-install through Blender's Preferences → Extensions.
-
-**Testing without Blender**: the top-level module and `registry.py` are
-`bpy`-guarded / bpy-free respectively — you can import them from plain
-Python for unit tests. `serve_helpers.py` imports `bpy` lazily inside its
-functions for the same reason.
+**Manifest changes** (`blender_manifest.toml`) require a full extension
+re-install — hot-reload will not pick them up.
 
 ---
 
-## Ship log & the Vault
+## Ship pipeline  [LIVE: `$NO3D_MONOREPO/tools/ship.sh --help`]
 
-`tools/ship.sh` (inside the No3d Dev monorepo) appends an entry to
-`$VAULT_001/PROJECTS/no3d tools/ship-log.md` on every successful ship.
-Treat that log as the audit trail for "what shipped when." When the user
-asks about release history, consult it first, not git tags in isolation —
-the log has the human-written notes.
+`tools/ship.sh` inside `$NO3D_MONOREPO` is the deterministic ship pipeline
+(bump → build → prune old zips → publish → git tag → vault ship-log append).
+For vendored extensions, `--sync-vendor` pulls upstream first. See the
+script's own top-of-file docstring for the current signature — do not
+memorize flags from this doc, they may change.
 
-`$VAULT_001` is expected at `~/Vault_001/`.
+`ship.sh` appends every successful ship to
+`$VAULT_001/PROJECTS/no3d tools/ship-log.md`. That log is the audit trail
+for "what shipped when" — consult it before inferring release history from
+git tags.
 
 ---
 
-## When in doubt
+## Anti-patterns  [POLICY]
 
-Prefer reading the canonical repo's `AGENTS.md` / `HANDOFF.md` / `README.md`
-over inferring from folder contents. Prefer running a `git status` +
-`git log --oneline -5` on any add-on before you claim to know its state.
-Prefer asking the user over overwriting uncommitted work.
+Do NOT:
+
+- Hardcode `~/Projects/no3d-asset-developer` (or any absolute path) into
+  new code. Read `resolve_anchors()` or the env vars.
+- Pattern-match on the string `"no3d-asset-developer"` to identify the
+  monorepo. Detect it as "the directory under `$NO3D_PROJECTS_ROOT`
+  containing both `vendor.toml` and `extensions/`" instead — future-proof
+  against renames.
+- Edit inside `$NO3D_MONOREPO/extensions/<vendored-id>/`. `vendor_sync.sh`
+  will overwrite you.
+- Silently update this file if you spot it's out of date. Commit the
+  correction with a note explaining what changed and when — future
+  sessions read git history to understand the ecosystem's evolution.
+- Assume `git status` is clean without running it. Assume the installed
+  copy of any add-on matches its source without diffing.
+
+---
+
+## Handoff for future Claude  [POLICY]
+
+If, at session end, you know something about the ecosystem that isn't
+captured here and would help the next session — **write it down**. Options:
+
+- Add it as a `[POLICY]` bullet under an existing section here.
+- If it's project-specific, write it to the project's own `CLAUDE.md`
+  instead (project tier).
+- If it's a machine-detectable fact rather than a policy, add discovery
+  logic to `discover_addon_repos` / `discover_blend_projects` /
+  `_asset_libraries` so future sessions get it automatically via
+  **Refresh Drift Map**.
+
+Prefer growing the discovery over growing the enumeration. Every static
+list in this file is a future drift bug.

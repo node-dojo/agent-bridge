@@ -35,11 +35,225 @@ _INSTRUCTION_FILENAMES = ("CLAUDE.md", "AGENTS.md", "claude.md", "agents.md")
 _THIS_ADDON_DIR = Path(__file__).resolve().parent
 
 
+# ---------------------------------------------------------------------------
+# Anchor paths — single source of truth, environment-variable overridable.
+# Every user-facing path claim in this add-on (primer, drift map, CLAUDE.md)
+# resolves through here, so a folder rename or machine migration is a
+# one-var edit rather than a doc-wide search-and-replace.
+# ---------------------------------------------------------------------------
+
+_ANCHOR_ENV_VARS = (
+    # (env var, default relative to $HOME, human label)
+    ("NO3D_PROJECTS_ROOT",       "Projects",                                                     "Add-on / code repos root"),
+    ("NO3D_MONOREPO",            "Projects/no3d-asset-developer",                                "No3d Dev monorepo"),
+    ("NO3D_BLEND_PROJECTS_ROOT", "Library/CloudStorage/Dropbox/Caveman Creative/"
+                                  "THE WELL_Digital Assets/THE WELL_play files",                 "Blender .blend projects root"),
+    ("VAULT_001",                "Vault_001",                                                    "Vault (ship log lives here)"),
+    ("AGENT_BRIDGE_SRC",         "Projects/agent-bridge/agent_bridge",                           "Agent Bridge canonical source"),
+)
+
+
+def resolve_anchors() -> dict:
+    """Return a dict of {env_var: {path, source, label, exists}} for every anchor.
+
+    `source` is 'env' when the env var was set (even to an empty string that
+    resolves), or 'default' when we fell back to $HOME/<default>.
+    """
+    home = Path.home()
+    out = {}
+    for var, default_rel, label in _ANCHOR_ENV_VARS:
+        env_val = os.environ.get(var)
+        if env_val:
+            p = Path(env_val).expanduser()
+            source = "env"
+        else:
+            p = home / default_rel
+            source = "default"
+        out[var] = {
+            "path": str(p),
+            "source": source,
+            "label": label,
+            "exists": p.exists(),
+        }
+    return out
+
+
 def _first_existing(paths):
     for p in paths:
         if p.exists() and p.is_file():
             return p
     return None
+
+
+# ---------------------------------------------------------------------------
+# Add-on repo discovery (bpy-free — reads the filesystem, not Blender state).
+# The rule: any directory (up to depth 4) under NO3D_PROJECTS_ROOT that
+# contains a blender_manifest.toml is a Blender add-on repo. Its git remote
+# and dirty flag come from the enclosing git repo. Vendor relationships
+# come from the monorepo's vendor.toml.
+# ---------------------------------------------------------------------------
+
+
+def _git(repo: Path, *args) -> str:
+    """Run `git -C <repo> <args>` and return stripped stdout, or '' on error."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _find_git_root(start: Path) -> Path | None:
+    """Walk up from `start` looking for a .git directory. Return the repo root or None."""
+    cur = start
+    for _ in range(8):
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+    return None
+
+
+def _read_vendor_toml(monorepo: Path) -> dict:
+    """Return {ext_id: {source, ref, subdir}} from monorepo/vendor.toml. Empty on missing/parse-error."""
+    vt = monorepo / "vendor.toml"
+    if not vt.exists():
+        return {}
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib  # type: ignore
+        except ImportError:
+            return {}
+    try:
+        return tomllib.loads(vt.read_text())
+    except Exception:  # pylint: disable=broad-exception-caught
+        return {}
+
+
+def discover_addon_repos(projects_root: Path,
+                         monorepo: Path | None = None,
+                         max_depth: int = 4) -> list[dict]:
+    """Enumerate Blender add-on repos under `projects_root`.
+
+    For each: {id, path, manifest_path, git_root, remote, branch, head, dirty,
+              vendor_source (or None), monorepo (or None)}.
+    """
+    if not projects_root.exists():
+        return []
+
+    # Vendor relationships (if the monorepo is present).
+    vendor_map: dict[str, dict] = {}
+    if monorepo is not None and monorepo.exists():
+        vendor_map = _read_vendor_toml(monorepo)
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    def walk(root: Path, depth: int):
+        if depth > max_depth:
+            return
+        # Skip anything under an _archive/ tree.
+        if any(part.startswith("_archive") for part in root.parts):
+            return
+        try:
+            entries = list(root.iterdir())
+        except (PermissionError, OSError):
+            return
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                if entry.name.startswith(".") or entry.name == "__pycache__":
+                    continue
+                walk(entry, depth + 1)
+            elif entry.name == "blender_manifest.toml":
+                addon_dir = entry.parent
+                key = str(addon_dir.resolve())
+                if key in seen:
+                    continue
+                seen.add(key)
+                # Extract id from manifest (best-effort — cheap regex, no toml parse).
+                addon_id = addon_dir.name
+                try:
+                    manifest_text = entry.read_text()
+                    import re
+                    m = re.search(r'^\s*id\s*=\s*"([^"]+)"', manifest_text, re.MULTILINE)
+                    if m:
+                        addon_id = m.group(1)
+                    ver_m = re.search(r'^\s*version\s*=\s*"([^"]+)"', manifest_text, re.MULTILINE)
+                    version = ver_m.group(1) if ver_m else ""
+                except OSError:
+                    version = ""
+                git_root = _find_git_root(addon_dir)
+                remote = _git(git_root, "remote", "get-url", "origin") if git_root else ""
+                branch = _git(git_root, "symbolic-ref", "--short", "HEAD") if git_root else ""
+                head = _git(git_root, "log", "-1", "--format=%h %cs %s") if git_root else ""
+                dirty_out = _git(git_root, "status", "--porcelain") if git_root else ""
+                dirty = bool(dirty_out)
+                # Is this a vendored copy?
+                vendor_source = None
+                if git_root and vendor_map:
+                    monorepo_resolved = monorepo.resolve() if monorepo else None
+                    if monorepo_resolved and monorepo_resolved in addon_dir.resolve().parents:
+                        vendor_source = vendor_map.get(addon_id)
+                results.append({
+                    "id": addon_id,
+                    "version": version,
+                    "path": str(addon_dir),
+                    "manifest_path": str(entry),
+                    "git_root": str(git_root) if git_root else None,
+                    "remote": remote or None,
+                    "branch": branch or None,
+                    "head": head or None,
+                    "dirty": dirty,
+                    "vendor_source": vendor_source,
+                })
+
+    walk(projects_root, 0)
+    return results
+
+
+def discover_blend_projects(blend_root: Path, max_depth: int = 3) -> list[dict]:
+    """Enumerate .blend files under `blend_root` (shallow). Returns
+    [{name, path, size, mtime, parent}] sorted by mtime desc, capped at 200."""
+    if not blend_root.exists():
+        return []
+    found: list[dict] = []
+
+    def walk(root: Path, depth: int):
+        if depth > max_depth or len(found) >= 200:
+            return
+        try:
+            entries = list(root.iterdir())
+        except (PermissionError, OSError):
+            return
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir() and not entry.name.startswith("."):
+                walk(entry, depth + 1)
+            elif entry.is_file() and entry.suffix.lower() == ".blend":
+                try:
+                    stat = entry.stat()
+                except OSError:
+                    continue
+                found.append({
+                    "name": entry.name,
+                    "path": str(entry),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "parent": entry.parent.name,
+                })
+
+    walk(blend_root, 0)
+    found.sort(key=lambda r: r["mtime"], reverse=True)
+    return found
 
 
 def discover_instruction_files(project_dir: Path | None) -> list[dict]:
@@ -102,8 +316,15 @@ def _build_primer_prompt(project_dir: Path,
                         stem: str,
                         pid: int | None,
                         port: int | None,
-                        instructions: list[dict]) -> str:
-    """Build a concise system-prompt primer to pass to `claude --append-system-prompt`."""
+                        instructions: list[dict],
+                        anchors: dict | None = None,
+                        asset_libraries: list[dict] | None = None) -> str:
+    """Build a concise system-prompt primer for `claude --append-system-prompt`.
+
+    Anchors + asset libs give Claude a durable frame of reference: instead of
+    hardcoding paths, we hand over the env-var-anchored map so a folder
+    rename doesn't invalidate the primer.
+    """
     lines = []
     lines.append(
         f"You are launched from the Blender project '{stem or '(unsaved)'}' at "
@@ -115,11 +336,25 @@ def _build_primer_prompt(project_dir: Path,
             f"Route bpy calls through the agent-bridge MCP server targeting stem '{stem}'."
         )
     if instructions:
-        lines.append("Read these instruction docs before acting (globals first, then add-on, then project):")
+        lines.append("Read these instruction docs first (globals → agent bridge → project):")
         for row in instructions:
             lines.append(f"  - [{row['scope']}] {row['path']}")
+    if anchors:
+        lines.append("Anchor paths (env-var overridable; use these, don't hardcode):")
+        for var, info in anchors.items():
+            mark = "" if info["exists"] else "  [missing]"
+            lines.append(f"  - ${var} = {info['path']}{mark}  # {info['label']}")
+        lines.append(
+            "To enumerate current add-on repos, walk $NO3D_PROJECTS_ROOT for blender_manifest.toml. "
+            "To identify vendored extensions, read $NO3D_MONOREPO/vendor.toml. "
+            "For related .blend projects, look under $NO3D_BLEND_PROJECTS_ROOT."
+        )
+    if asset_libraries:
+        lines.append("Blender asset libraries currently registered in this instance:")
+        for lib in asset_libraries:
+            lines.append(f"  - {lib['name']}: {lib['path']}")
     lines.append(
-        "When you finish reading, state which docs you loaded and summarize the rules that apply to this session."
+        "When you finish reading, state which docs you loaded and summarize the rules that apply."
     )
     return "\n".join(lines)
 
@@ -161,6 +396,20 @@ if _HAS_BPY:
     from . import serve_helpers as sh
 
     _PID = os.getpid()
+
+    def _asset_libraries() -> list[dict]:
+        """Enumerate the asset libraries configured in this Blender instance."""
+        out = []
+        try:
+            libs = bpy.context.preferences.filepaths.asset_libraries
+        except (AttributeError, RuntimeError):
+            return out
+        for lib in libs:
+            out.append({
+                "name": getattr(lib, "name", "(unnamed)"),
+                "path": getattr(lib, "path", ""),
+            })
+        return out
 
     # -----------------------------------------------------------------------
     # Existing serve / stop operators
@@ -252,7 +501,12 @@ if _HAS_BPY:
             entry = reg.read(_PID)
             port = entry.get("port") if entry else None
             instructions = discover_instruction_files(project_dir)
-            primer = _build_primer_prompt(project_dir, stem, _PID, port, instructions)
+            anchors = resolve_anchors()
+            asset_libs = _asset_libraries()
+            primer = _build_primer_prompt(
+                project_dir, stem, _PID, port, instructions,
+                anchors=anchors, asset_libraries=asset_libs,
+            )
 
             if sys.platform == "darwin":
                 try:
@@ -283,6 +537,141 @@ if _HAS_BPY:
             except Exception as ex:  # pylint: disable=broad-exception-caught
                 self.report({"ERROR"}, f"Could not prepare launch script: {ex}")
                 return {"CANCELLED"}
+
+    # -----------------------------------------------------------------------
+    # NEW: Refresh drift map — one-click ecosystem snapshot
+    # -----------------------------------------------------------------------
+
+    def _format_drift_report(anchors: dict,
+                             addons: list[dict],
+                             blend_projects: list[dict],
+                             asset_libs: list[dict]) -> str:
+        """Produce a markdown drift-check report Claude can read verbatim."""
+        import datetime
+        lines = ["# Agent Bridge — drift map", ""]
+        try:
+            lines.append(f"_Generated: {datetime.datetime.now().isoformat(timespec='seconds')}_")
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+        lines.append("")
+
+        # --- Anchors ---
+        lines.append("## Anchor paths (env-var overridable)")
+        lines.append("")
+        for var, info in anchors.items():
+            status = "OK" if info["exists"] else "MISSING"
+            src = f"env={info['source']}"
+            lines.append(f"- **${var}** ({status}, {src}) — `{info['path']}`  \n  _{info['label']}_")
+        lines.append("")
+
+        # --- Add-ons ---
+        lines.append(f"## Add-on repos ({len(addons)} found)")
+        lines.append("")
+        if not addons:
+            lines.append("_No blender_manifest.toml files found under $NO3D_PROJECTS_ROOT._")
+        else:
+            authored = [a for a in addons if a["vendor_source"] is None]
+            vendored = [a for a in addons if a["vendor_source"] is not None]
+            if authored:
+                lines.append("### Authored-in-place")
+                lines.append("")
+                for a in authored:
+                    dirty_mark = " **[DIRTY]**" if a["dirty"] else ""
+                    lines.append(f"- **{a['id']}** v{a['version'] or '?'}{dirty_mark}")
+                    lines.append(f"  - path: `{a['path']}`")
+                    if a["remote"]:
+                        lines.append(f"  - remote: `{a['remote']}` @ `{a['branch'] or '?'}`")
+                    else:
+                        lines.append("  - remote: _(none — local only)_")
+                    if a["head"]:
+                        lines.append(f"  - head: `{a['head']}`")
+                lines.append("")
+            if vendored:
+                lines.append("### Vendored (canonical source lives elsewhere — DO NOT edit in place)")
+                lines.append("")
+                for a in vendored:
+                    vs = a["vendor_source"] or {}
+                    lines.append(f"- **{a['id']}** v{a['version'] or '?'}")
+                    lines.append(f"  - vendored copy: `{a['path']}`")
+                    lines.append(f"  - canonical: `{vs.get('source', '?')}` @ `{vs.get('ref', '?')}` "
+                                 f"(subdir `{vs.get('subdir', '?')}`)")
+                lines.append("")
+
+        # --- Blend projects ---
+        lines.append(f"## Recent .blend projects ({len(blend_projects)} found, top 20 by mtime)")
+        lines.append("")
+        if not blend_projects:
+            lines.append("_No .blend files found under $NO3D_BLEND_PROJECTS_ROOT._")
+        else:
+            for b in blend_projects[:20]:
+                lines.append(f"- `{b['name']}` — in `{b['parent']}/`  \n  `{b['path']}`")
+        lines.append("")
+
+        # --- Asset libraries ---
+        lines.append(f"## Asset libraries registered in this Blender ({len(asset_libs)})")
+        lines.append("")
+        if not asset_libs:
+            lines.append("_None configured in Preferences → File Paths → Asset Libraries._")
+        else:
+            for lib in asset_libs:
+                lines.append(f"- **{lib['name']}** — `{lib['path']}`")
+        lines.append("")
+
+        lines.append("---")
+        lines.append("")
+        lines.append("Regenerate via the N-panel's *Refresh Drift Map* button, or by calling "
+                     "`bpy.ops.agent_bridge.refresh_drift_map()`.")
+        return "\n".join(lines)
+
+    class AGENT_BRIDGE_OT_refresh_drift_map(Operator):
+        bl_idname = "agent_bridge.refresh_drift_map"
+        bl_label = "Refresh Drift Map"
+        bl_description = (
+            "Scan add-on repos, .blend projects, asset libraries, and vendor.toml. "
+            "Produce a timestamped drift report as a Blender Text datablock and copy to clipboard."
+        )
+        bl_options = {"REGISTER"}
+
+        def execute(self, context):
+            anchors = resolve_anchors()
+            projects_root = Path(anchors["NO3D_PROJECTS_ROOT"]["path"])
+            monorepo = Path(anchors["NO3D_MONOREPO"]["path"])
+            blend_root = Path(anchors["NO3D_BLEND_PROJECTS_ROOT"]["path"])
+            addons = discover_addon_repos(projects_root, monorepo)
+            blend_projects = discover_blend_projects(blend_root)
+            asset_libs = _asset_libraries()
+            report = _format_drift_report(anchors, addons, blend_projects, asset_libs)
+
+            # Replace/create a Text datablock named "agent-bridge:drift-map".
+            name = "agent-bridge:drift-map"
+            existing = bpy.data.texts.get(name)
+            if existing:
+                existing.clear()
+                existing.write(report)
+                text_db = existing
+            else:
+                text_db = bpy.data.texts.new(name)
+                text_db.write(report)
+
+            # Target any open Text Editor at it.
+            for window in bpy.context.window_manager.windows:
+                for area in window.screen.areas:
+                    if area.type == "TEXT_EDITOR":
+                        for space in area.spaces:
+                            if space.type == "TEXT_EDITOR":
+                                space.text = text_db
+
+            # Also copy the report to clipboard so it can be pasted anywhere.
+            context.window_manager.clipboard = report
+
+            dirty_count = sum(1 for a in addons if a["dirty"])
+            self.report(
+                {"INFO"},
+                f"Drift map refreshed: {len(addons)} add-on(s) "
+                f"({dirty_count} dirty), {len(blend_projects)} blend(s), "
+                f"{len(asset_libs)} asset lib(s). Report → Text '{name}' + clipboard."
+            )
+            return {"FINISHED"}
 
     # -----------------------------------------------------------------------
     # NEW: Instruction-file open helpers
@@ -457,6 +846,12 @@ if _HAS_BPY:
                     text=f"@ {Path(blendfile).parent.name}/",
                     icon="FILE_FOLDER",
                 )
+            # Drift-check ritual made one click.
+            launch_box.operator(
+                "agent_bridge.refresh_drift_map",
+                text="Refresh Drift Map",
+                icon="FILE_REFRESH",
+            )
 
             # --- Instruction docs --------------------------------------------
             layout.separator()
@@ -506,6 +901,7 @@ if _HAS_BPY:
         AGENT_BRIDGE_OT_stop,
         AGENT_BRIDGE_OT_copy_instance,
         AGENT_BRIDGE_OT_launch_claude,
+        AGENT_BRIDGE_OT_refresh_drift_map,
         AGENT_BRIDGE_OT_open_in_blender_text,
         AGENT_BRIDGE_OT_open_in_default_editor,
         AGENT_BRIDGE_OT_reveal_folder,

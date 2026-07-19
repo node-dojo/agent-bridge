@@ -242,11 +242,13 @@ live Blender session:
   Presets, CGMatter, Higgsas, project asset catalogues, etc.). Instancing
   one into a tree — even into a group the agent is designing — does not
   make it "newly created."
-- **Never rename OR re-label pre-existing nodes.** The node's catalogue
-  name IS the statement of what it does; renaming or slapping custom labels
-  on it muddies the readability of the logic and creates confusion when
-  diffing, debugging, or talking about the tree. Auto `.001` suffixes stay
-  too.
+- **Never rename OR re-label pre-existing nodes.** An unlabeled functional
+  node's header self-documents its operation (a Math node displays `Add` /
+  `Multiply` as its title). A custom label OVERRIDES that header — a
+  Multiply labeled `Combine` or an Add labeled `CALC` actively hides the
+  operation and forces the reader to open every node to follow the logic.
+  The label isn't just noise; it's disinformation. Auto `.001` suffixes
+  stay too.
   - **Exception — input/constant nodes** (Value, Integer, Vector, Boolean,
     and similar Input-category nodes whose only job is to supply a value):
     these MAY be labeled to state what the value represents (e.g. a Value

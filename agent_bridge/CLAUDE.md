@@ -236,21 +236,25 @@ git tags.
 Rules for any agent editing geometry-node (or shader/compositor) trees in a
 live Blender session:
 
-- **Never rename vanilla/native nodes.** A `Set Position` node stays
-  `Set Position` (and its auto `.001` suffixes stay too). Renaming native
-  nodes muddies the readability of the logic — the node's name IS the
-  statement of what it does — and creates confusion when diffing, debugging,
-  or talking about the tree.
-- **Never rename pre-existing nodes or node groups** — anything that already
-  existed in the file before this session, native or user-made, keeps its
-  name. No exceptions for "clarity."
-- **Annotation goes in labeled frames, not names.** If the goal is to label,
-  comment, or explain a region of logic, wrap the nodes in a **frame** and
-  label the frame. Frames are the designated commentary layer; node names
-  are not.
-- **Only newly created node groups are ever given new names.** A node group
-  the agent creates in-session gets a descriptive name at creation time
-  (e.g. `Connect: MST`). That is the only naming an agent performs.
+- **Anything in the Add/Search node catalogue is a pre-existing node.**
+  Native nodes (`Set Position`, `Attribute Statistic`, …) AND installed
+  node-group assets / preset libraries (Erindale Toolkit, Node++, T3D GN
+  Presets, CGMatter, Higgsas, project asset catalogues, etc.). Instancing
+  one into a tree — even into a group the agent is designing — does not
+  make it "newly created."
+- **Never rename OR re-label pre-existing nodes.** The node's catalogue
+  name IS the statement of what it does; renaming or slapping custom labels
+  on it muddies the readability of the logic and creates confusion when
+  diffing, debugging, or talking about the tree. Auto `.001` suffixes stay
+  too. No exceptions for "clarity."
+- **Annotation goes in labeled frames, not node names or labels.** If the
+  goal is to label, comment, or explain a region of logic, wrap the nodes
+  in a **frame** and label the frame. Frames are the designated commentary
+  layer.
+- **The only thing an agent ever names is a newly *designed* node group
+  asset.** A group the agent authors in-session gets a descriptive name at
+  creation time (e.g. `Connect: MST`). That is the entire naming surface —
+  nothing inside it, nothing pre-existing.
 
 ---
 

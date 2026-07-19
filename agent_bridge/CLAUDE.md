@@ -246,7 +246,12 @@ live Blender session:
   name IS the statement of what it does; renaming or slapping custom labels
   on it muddies the readability of the logic and creates confusion when
   diffing, debugging, or talking about the tree. Auto `.001` suffixes stay
-  too. No exceptions for "clarity."
+  too.
+  - **Exception — input/constant nodes** (Value, Integer, Vector, Boolean,
+    and similar Input-category nodes whose only job is to supply a value):
+    these MAY be labeled to state what the value represents (e.g. a Value
+    node labeled `rest length`). Their generic catalogue name conveys
+    nothing; the label is the readable part.
 - **Annotation goes in labeled frames, not node names or labels.** If the
   goal is to label, comment, or explain a region of logic, wrap the nodes
   in a **frame** and label the frame. Frames are the designated commentary

@@ -231,6 +231,29 @@ git tags.
 
 ---
 
+## Node-tree editing conduct  [POLICY]
+
+Rules for any agent editing geometry-node (or shader/compositor) trees in a
+live Blender session:
+
+- **Never rename vanilla/native nodes.** A `Set Position` node stays
+  `Set Position` (and its auto `.001` suffixes stay too). Renaming native
+  nodes muddies the readability of the logic — the node's name IS the
+  statement of what it does — and creates confusion when diffing, debugging,
+  or talking about the tree.
+- **Never rename pre-existing nodes or node groups** — anything that already
+  existed in the file before this session, native or user-made, keeps its
+  name. No exceptions for "clarity."
+- **Annotation goes in labeled frames, not names.** If the goal is to label,
+  comment, or explain a region of logic, wrap the nodes in a **frame** and
+  label the frame. Frames are the designated commentary layer; node names
+  are not.
+- **Only newly created node groups are ever given new names.** A node group
+  the agent creates in-session gets a descriptive name at creation time
+  (e.g. `Connect: MST`). That is the only naming an agent performs.
+
+---
+
 ## Anti-patterns  [POLICY]
 
 Do NOT:

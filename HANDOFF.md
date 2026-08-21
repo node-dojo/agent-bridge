@@ -17,7 +17,7 @@ Replaces the single, fought-over Blender MCP port with a broker that routes an a
 Agent Bridge **is `blmcp` (the official Blender MCP server) with a smarter address book** — NOT a fork.
 
 - **Agent side** (`agent-bridge` console script → `agent_bridge/bridge_server.py:main`): builds its own `FastMCP("agent-bridge")`, runs blmcp's tool auto-discovery (inherits all ~20 tool modules / 28 tools), monkeypatches **one** function — `blmcp.tools_helpers.connection.get_connection_params` — to resolve the sticky target's live `(host, port)` from the registry, and adds two tools: `use_instance(target, pid=None)` and `list_instances()`.
-- **Blender side** (`agent_bridge/__init__.py` operators + panel, `serve_helpers.py`): the **Serve to Agents** button starts the official MCP server on a free port and registers this instance (pid, port, `.blend` stem) into `~/.blender-pairs/<pid>.json`.
+- **Blender side** (`agent_bridge/__init__.py` operators + panel, `serve_helpers.py`): auto-serve starts the official MCP server on a free port and registers this instance (pid, port, `.blend` stem) into `~/.blender-pairs/<pid>.json`; the panel also provides manual stop/restart controls.
 - **Registry** (`agent_bridge/registry.py`): shared on-disk format at `~/.blender-pairs/<pid>.json`. `gc_dead()` drops entries for dead PIDs so stale instances never resolve.
 - **Resolver** (`agent_bridge/resolver.py`): filename→live port; sticky active target; refuses ambiguity (same `.blend` open twice → lists PIDs); default = the-only-one-live, else refuse.
 
@@ -49,7 +49,7 @@ agent-bridge/
 ├── docs/superpowers/
 │   ├── specs/2026-07-08-agent-bridge-design.md
 │   └── plans/2026-07-08-agent-bridge.md
-├── dist/agent_bridge-0.1.0.zip   # built Blender extension (gitignored)
+├── dist/agent_bridge-0.2.0.zip   # built Blender extension (gitignored)
 ├── pyproject.toml            # `agent-bridge` console script; pinned blmcp git dep; hatchling
 ├── pytest.ini                # testpaths=tests (clean; no conftest hacks needed in this repo)
 ├── README.md
@@ -61,7 +61,7 @@ agent-bridge/
 - **Branch:** `master`. 10 commits, `62dbdb0` (Task 1) → `073eea0` (Task 7.5).
 - **Tests:** `.venv/bin/python -m pytest` → **30 passed**.
 - **Package:** editable-installed in `.venv`; wheel builds clean; `agent-bridge` console script launches as a stdio MCP server.
-- **Blender extension:** `dist/agent_bridge-0.1.0.zip` validates (`extension validate` exit 0) and builds.
+- **Blender extension:** `dist/agent_bridge-0.2.0.zip` validates (`extension validate` exit 0) and builds.
 - **Task ledger:** `.superpowers/sdd/progress.md` (per-task commit ranges, review status, deferred findings).
 
 ### Per-task status
@@ -89,10 +89,10 @@ agent-bridge/
 Needs a **fresh Claude Code session** (the MCP command swap loads at session launch).
 
 **Setup**
-1. Install the extension in Blender: **Edit > Preferences > Get Extensions > ▾ > Install from Disk…** → `/Users/joebowers/Projects/agent-bridge/dist/agent_bridge-0.1.0.zip`. Enable it → an **Agent Bridge** panel appears in the 3D viewport N-panel under the **Claude** tab.
+1. Install the extension in Blender: **Edit > Preferences > Get Extensions > ▾ > Install from Disk…** → `/Users/joebowers/Projects/agent-bridge/dist/agent_bridge-0.2.0.zip`. Enable it → an **Agent Bridge** panel appears in the 3D viewport N-panel under the **Claude** tab and auto-serves after startup.
 
 **Test (new session)**
-2. Open **two** Blenders, save each to a distinct file (e.g. `resin.blend`, `assetdev.blend`). In each: **Claude > Agent Bridge > Serve to Agents**.
+2. Open **two** Blenders and save each to a distinct file (e.g. `resin.blend`, `assetdev.blend`). Confirm both appear in **Claude > Agent Bridge > Live instances**.
 3. Confirm registration: `ls ~/.blender-pairs/` and cat the JSONs → two entries, distinct ports, `blendfile_stem` = `resin` / `assetdev`.
 4. In the new agent chat: `list_instances` (shows both) → `use_instance("resin")` → create empty `AB_MARKER_RESIN` → `use_instance("assetdev")` → create `AB_MARKER_ASSETDEV`.
 5. Verify partition: each marker exists ONLY in its own file → routing works.

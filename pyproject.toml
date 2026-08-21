@@ -1,6 +1,6 @@
 [project]
 name = "agent-bridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Route Claude agent Blender calls to the live instance named by its .blend file"
 requires-python = ">=3.12"
 dependencies = [

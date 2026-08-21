@@ -397,6 +397,15 @@ if _HAS_BPY:
 
     _PID = os.getpid()
 
+    # Session-scoped opt-out. Set True when the user clicks *Stop Serving* so
+    # subsequent load_post / save_post events (or a re-triggered auto-serve
+    # timer) don't quietly resurrect the server against the user's intent.
+    # Cleared when they click *Serve to Agents* again. Resets on Blender
+    # restart (module reload).
+    _user_stopped = False
+
+    _AUTO_SERVE_DELAY = 0.5  # seconds after register before first auto-serve
+
     def _asset_libraries() -> list[dict]:
         """Enumerate the asset libraries configured in this Blender instance."""
         out = []
@@ -423,6 +432,7 @@ if _HAS_BPY:
 
         def execute(self, context):
             del context
+            global _user_stopped
             prefs_host = "localhost"
             try:
                 if not sh.is_official_mcp_running():
@@ -435,6 +445,8 @@ if _HAS_BPY:
                 return {"CANCELLED"}
             blendfile = bpy.data.filepath or ""
             reg.write(_PID, build_register_payload(_PID, port, prefs_host, blendfile))
+            # Explicit user action to serve → re-arm auto-serve for future events.
+            _user_stopped = False
             self.report({"INFO"}, f"Serving '{Path(blendfile).stem or '(unsaved)'}' on :{port}")
             return {"FINISHED"}
 
@@ -446,12 +458,16 @@ if _HAS_BPY:
 
         def execute(self, context):
             del context
+            global _user_stopped
             try:
                 sh.stop_official_mcp()
             except Exception:  # pylint: disable=broad-exception-caught
                 pass
             reg.remove(_PID)
-            self.report({"INFO"}, "Stopped serving.")
+            # Respect the user's stop intent for the rest of the session — do
+            # not let a subsequent .blend load quietly restart the server.
+            _user_stopped = True
+            self.report({"INFO"}, "Stopped serving. (Auto-serve disabled until you click Serve or restart Blender.)")
             return {"FINISHED"}
 
     # -----------------------------------------------------------------------
@@ -804,6 +820,8 @@ if _HAS_BPY:
                 layout.label(text=f"As: {entry.get('blendfile_stem') or '(unsaved)'}")
             else:
                 layout.operator("agent_bridge.serve", icon="LINKED")
+                if _user_stopped:
+                    layout.label(text="Auto-serve paused for this session.", icon="INFO")
 
             # --- Live instances (click a row to copy it) ---------------------
             layout.separator()
@@ -908,11 +926,104 @@ if _HAS_BPY:
         AGENT_BRIDGE_PT_panel,
     )
 
+    # -----------------------------------------------------------------------
+    # Auto-serve: start the server on add-on register, re-register on file
+    # load / save-as. Deferred via bpy.app.timers because register-time
+    # bpy.context is restricted (running operators there is unreliable).
+    # -----------------------------------------------------------------------
+
+    def _auto_serve() -> None:
+        """Invoke the serve operator if it's safe/desired to do so.
+
+        Skips when: headless Blender, the user has stopped this session, or
+        we're already serving (the operator is idempotent, but avoiding the
+        extra Info-bar toast keeps things quiet on load_post/save_post).
+        """
+        if bpy.app.background:
+            return
+        if _user_stopped:
+            return
+        # Already registered → the operator would just rewrite the registry
+        # entry. Do that anyway on file-load / save-as so the stem stays
+        # current; only skip if the current blendfile matches the entry.
+        entry = reg.read(_PID)
+        current_blend = bpy.data.filepath or ""
+        if (
+            entry
+            and entry.get("blendfile", "") == current_blend
+            and sh.is_official_mcp_running()
+        ):
+            return
+        try:
+            bpy.ops.agent_bridge.serve()
+        except (RuntimeError, AttributeError):
+            # Operator context may not yet be ready on very early boot;
+            # a follow-up load_post will retry.
+            pass
+
+    def _auto_serve_timer():
+        _auto_serve()
+        return None  # fire once
+
+    @bpy.app.handlers.persistent
+    def _agent_bridge_on_load(*_args):
+        _auto_serve()
+
+    @bpy.app.handlers.persistent
+    def _agent_bridge_on_save(*_args):
+        # Save-As changes bpy.data.filepath → registry stem needs to follow.
+        _auto_serve()
+
+    def _install_handlers() -> None:
+        # Remove any stale copies from a prior module load (name-based match
+        # so we survive addon disable/enable + reload cycles).
+        for lst, name in (
+            (bpy.app.handlers.load_post, "_agent_bridge_on_load"),
+            (bpy.app.handlers.save_post, "_agent_bridge_on_save"),
+        ):
+            for h in list(lst):
+                if getattr(h, "__name__", "") == name:
+                    lst.remove(h)
+        bpy.app.handlers.load_post.append(_agent_bridge_on_load)
+        bpy.app.handlers.save_post.append(_agent_bridge_on_save)
+
+    def _remove_handlers() -> None:
+        for lst, name in (
+            (bpy.app.handlers.load_post, "_agent_bridge_on_load"),
+            (bpy.app.handlers.save_post, "_agent_bridge_on_save"),
+        ):
+            for h in list(lst):
+                if getattr(h, "__name__", "") == name:
+                    lst.remove(h)
+
     def register():
+        global _user_stopped
+        _user_stopped = False
         for cls in _classes:
             bpy.utils.register_class(cls)
+        _install_handlers()
+        # Defer the initial serve past the restricted register-time context.
+        if not bpy.app.background:
+            try:
+                if not bpy.app.timers.is_registered(_auto_serve_timer):
+                    bpy.app.timers.register(_auto_serve_timer, first_interval=_AUTO_SERVE_DELAY)
+            except Exception:  # pylint: disable=broad-exception-caught
+                pass
 
     def unregister():
+        _remove_handlers()
+        try:
+            if bpy.app.timers.is_registered(_auto_serve_timer):
+                bpy.app.timers.unregister(_auto_serve_timer)
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+        # Best-effort stop so a disable doesn't leave a dangling server that
+        # the user can't reach from the N-panel anymore.
+        try:
+            sh.stop_official_mcp()
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+        reg.remove(_PID)
         for cls in reversed(_classes):
             bpy.utils.unregister_class(cls)
 else:

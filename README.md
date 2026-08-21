@@ -43,11 +43,11 @@ ls .venv/bin/agent-bridge
 
 ## Use
 
-1. **In each Blender instance:** open the N-panel, go to **Claude > Agent
-   Bridge**, and click **Serve to Agents**. This starts the official Blender
-   MCP add-on's socket server in that instance and registers its PID, port,
-   and `.blend` filename stem into a shared registry at
-   `~/.blender-pairs/<pid>.json`. Click **Stop Serving** to unregister.
+1. **In each Blender instance:** enable Agent Bridge. It automatically starts
+   the official Blender MCP add-on's socket server and registers its PID, port,
+   and `.blend` filename stem at `~/.blender-pairs/<pid>.json`. Use **N-panel >
+   Claude > Agent Bridge** to inspect its status, manually restart it, or click
+   **Stop Serving** to unregister and pause auto-serve for that Blender session.
 
 2. **Point Claude Code's `blender` MCP server at Agent Bridge instead of
    blender-mcp.** In `~/.claude.json`, find the `blender` MCP server entry

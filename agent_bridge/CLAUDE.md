@@ -181,9 +181,21 @@ one per serving Blender. Schema per `build_register_payload`:
 }
 ```
 
-- Serve: N-panel *Serve to Agents* → starts official Blender MCP on a free
-  port in `9876–9999` → writes the registry entry.
-- Stop: *Stop Serving* → stops MCP → removes the file.
+- **Auto-serve (v0.2.0+):** on add-on register (Blender launch, addon enable),
+  a deferred `bpy.app.timers` callback runs the serve operator so the
+  instance is reachable without a click. A persistent `load_post` /
+  `save_post` handler re-serves on file open / Save-As so the registry stem
+  tracks the current .blend. Headless Blender (`bpy.app.background`) is
+  skipped so tests aren't affected.
+- Serve (manual): N-panel *Serve to Agents* → starts official Blender MCP
+  on a free port in `9876–9999` → writes the registry entry. Also re-arms
+  auto-serve if the user had stopped it this session.
+- Stop: *Stop Serving* → stops MCP → removes the registry file → sets a
+  session-scoped `_user_stopped` flag so `load_post`/`save_post` won't
+  quietly restart the server. Cleared by clicking *Serve to Agents* again
+  or restarting Blender.
+- Unregister: stops the MCP server, removes the registry entry, tears down
+  the handlers/timer.
 - GC: `registry.live_instances()` prunes dead-pid entries on read.
 - Target: the standalone `agent-bridge` MCP process (outside Blender)
   routes agent bpy calls to the matching entry by `.blend` stem.

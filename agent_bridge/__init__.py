@@ -805,7 +805,7 @@ if _HAS_BPY:
         bl_label = "Agent Bridge"
         bl_space_type = "VIEW_3D"
         bl_region_type = "UI"
-        bl_category = "Claude"
+        bl_category = "Agent"
 
         def draw(self, context):
             del context
@@ -831,12 +831,17 @@ if _HAS_BPY:
             if not instances:
                 box.label(text="(none registered)", icon="DOT")
             else:
-                for i in instances:
+                current = [i for i in instances if i.get("blender_pid") == _PID]
+                others = [i for i in instances if i.get("blender_pid") != _PID]
+
+                def draw_instance_row(parent, instance):
+                    """Draw one copyable registry entry in the given layout."""
+                    i = instance
                     stem = reg.stem_of(i) or "(unsaved)"
                     port = i.get("port")
                     pid = i.get("blender_pid")
                     line = f"{stem}  :{port}  pid{pid}"
-                    row = box.row(align=True)
+                    row = parent.row(align=True)
                     op = row.operator(
                         "agent_bridge.copy_instance",
                         text=line,
@@ -844,6 +849,16 @@ if _HAS_BPY:
                         emboss=True,
                     )
                     op.payload = line
+
+                # Keep the Blender hosting this panel visually distinct at the
+                # top; the remaining live instances continue as the shared list.
+                if current:
+                    current_box = box.box()
+                    draw_instance_row(current_box, current[0])
+                    if others:
+                        box.separator(factor=0.5)
+                for instance in others:
+                    draw_instance_row(box, instance)
 
             # --- Launch Claude Code terminal ---------------------------------
             layout.separator()

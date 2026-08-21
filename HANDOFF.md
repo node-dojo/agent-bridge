@@ -89,10 +89,10 @@ agent-bridge/
 Needs a **fresh Claude Code session** (the MCP command swap loads at session launch).
 
 **Setup**
-1. Install the extension in Blender: **Edit > Preferences > Get Extensions > ▾ > Install from Disk…** → `/Users/joebowers/Projects/agent-bridge/dist/agent_bridge-0.2.0.zip`. Enable it → an **Agent Bridge** panel appears in the 3D viewport N-panel under the **Claude** tab and auto-serves after startup.
+1. Install the extension in Blender: **Edit > Preferences > Get Extensions > ▾ > Install from Disk…** → `/Users/joebowers/Projects/agent-bridge/dist/agent_bridge-0.2.0.zip`. Enable it → an **Agent Bridge** panel appears in the 3D viewport N-panel under the **Agent** tab and auto-serves after startup.
 
 **Test (new session)**
-2. Open **two** Blenders and save each to a distinct file (e.g. `resin.blend`, `assetdev.blend`). Confirm both appear in **Claude > Agent Bridge > Live instances**.
+2. Open **two** Blenders and save each to a distinct file (e.g. `resin.blend`, `assetdev.blend`). Confirm both appear in **Agent > Agent Bridge > Live instances**.
 3. Confirm registration: `ls ~/.blender-pairs/` and cat the JSONs → two entries, distinct ports, `blendfile_stem` = `resin` / `assetdev`.
 4. In the new agent chat: `list_instances` (shows both) → `use_instance("resin")` → create empty `AB_MARKER_RESIN` → `use_instance("assetdev")` → create `AB_MARKER_ASSETDEV`.
 5. Verify partition: each marker exists ONLY in its own file → routing works.

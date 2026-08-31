@@ -200,6 +200,60 @@ one per serving Blender. Schema per `build_register_payload`:
 - Target: the standalone `agent-bridge` MCP process (outside Blender)
   routes agent bpy calls to the matching entry by `.blend` stem.
 
+### Address Handoff  [POLICY]
+
+**Address Handoff** is the Blender-to-agent clipboard contract for quickly
+identifying the exact place the user means without manually copying instance,
+object, and node-group names one at a time.
+
+- Default shortcut: **Cmd+Shift+C** on macOS.
+- Operator: `bpy.ops.agent_bridge.copy_context_address()`; searchable from F3
+  as **Copy Address Handoff**.
+- The shortcut is registered independently in the 3D View, Outliner, Node
+  Editor, and Property Editor. All bindings are editable under Agent Bridge's
+  add-on preferences; never assume the default remains unchanged.
+- The Agent N-panel's copy button and live-instance rows intentionally copy an
+  instance-only handoff.
+
+The address becomes more specific according to the editor under the mouse:
+
+| Focused editor | Address resolution |
+|----------------|--------------------|
+| 3D View | live instance → selected/active object → its active or sole Geometry Nodes group |
+| Outliner | live instance → selected datablock; active object is the fallback when keymap context omits `selected_ids` |
+| Node Editor | live instance → edited node tree → group node under the mouse; active group node is the fallback |
+| Modifier Properties | live instance → active object → its active or sole Geometry Nodes group |
+| Other/no target | live instance only |
+
+Node-editor invocation uses the actual keyboard-event mouse coordinates for
+node hit-testing. This is why hovering a group node can produce a deeper
+handoff than merely focusing the editor. Blender does not expose equivalent
+non-destructive row hit-testing for every Outliner keymap event, so Outliner
+resolution prefers the selected datablock and then the active object.
+
+Clipboard examples:
+
+```text
+Blender target: "Soon Cages Manu Constraints.001" (:9879, pid 2103)
+Blender target: "Soon Cages Manu Constraints.001" (:9879, pid 2103) → Object: "Ricoh Cage handfeel test_v117" → Geometry Nodes: "Geometry Nodes.001"
+Blender target: "Soon Cages Manu Constraints.001" (:9879, pid 2103) → Geometry Nodes: "Geometry Nodes.001" → Selected Group: "3D Burn Medial Points"
+```
+
+The status notification names the deepest copied destination rather than an
+abstract level count:
+
+```text
+Agent Handoff copied: Pid
+Agent Handoff copied: Pid -> Object
+Agent Handoff copied: Pid -> Node Group
+```
+
+When an Address Handoff appears in a prompt, agents must interpret it
+left-to-right: target the stated live Blender instance first, then resolve the
+exact object or node-tree datablock names supplied. The rightmost component is
+the user's most specific intended working destination; do not substitute a
+similarly named object or group without reporting the ambiguity.
+
 **Key files** (both source and installed copy have the same layout):
 
 - `__init__.py` — Blender-side operators + N-panel; anchor / discovery

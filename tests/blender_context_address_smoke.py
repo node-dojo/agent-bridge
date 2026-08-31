@@ -70,10 +70,27 @@ try:
         fake_context("NODE_EDITOR", space_data=SimpleNamespace(edit_tree=group))
     )
     assert 'Geometry Nodes: "Address Geometry"' in node_address
-    assert 'Selected Group: "Nested Geometry"' in node_address
+    assert 'Referenced Node Group: "Nested Geometry"' in node_address
+    assert f'Node: "{group_node.name}"' in node_address
     assert agent_bridge._handoff_specificity(
         fake_context("NODE_EDITOR", space_data=SimpleNamespace(edit_tree=group))
-    ) == "Pid -> Node Group"
+    ) == "Pid -> Node"
+
+    frame = group.nodes.new("NodeFrame")
+    frame.name = "Burn Interior Frame"
+    frame.label = "Burn until the nearest surface switches across the interior"
+    group.nodes.active = frame
+    frame_address = agent_bridge._build_context_address(
+        fake_context("NODE_EDITOR", space_data=SimpleNamespace(edit_tree=group))
+    )
+    assert 'Frame: "Burn Interior Frame"' in frame_address
+    assert (
+        'Frame Label: "Burn until the nearest surface switches across the interior"'
+        in frame_address
+    )
+    assert agent_bridge._handoff_specificity(
+        fake_context("NODE_EDITOR", space_data=SimpleNamespace(edit_tree=group))
+    ) == "Pid -> Frame"
 
     outliner_address = agent_bridge._build_context_address(
         fake_context("OUTLINER", active_object=obj)

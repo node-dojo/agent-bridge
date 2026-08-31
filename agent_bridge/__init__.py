@@ -491,7 +491,12 @@ if _HAS_BPY:
             active = hovered or getattr(getattr(tree, "nodes", None), "active", None)
             nested = getattr(active, "node_tree", None) if active else None
             if nested is not None and nested != tree:
-                refs.append(("Selected Group", nested.name))
+                refs.append(("Referenced Node Group", nested.name))
+            if active is not None:
+                kind = "Frame" if active.type == "FRAME" else "Node"
+                refs.append((kind, active.name))
+                if active.label:
+                    refs.append((f"{kind} Label", active.label))
             return refs
 
         if area_type == "OUTLINER":
@@ -546,9 +551,13 @@ if _HAS_BPY:
             "Shader Nodes",
             "Compositor Nodes",
             "Node Tree",
-            "Selected Group",
+            "Referenced Node Group",
         }:
             deepest = "Node Group"
+        elif deepest in {"Node Label", "Node"}:
+            deepest = "Node"
+        elif deepest in {"Frame Label", "Frame"}:
+            deepest = "Frame"
         return f"Pid -> {deepest}"
 
     def _asset_libraries() -> list[dict]:

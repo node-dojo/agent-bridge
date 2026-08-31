@@ -221,22 +221,30 @@ The address becomes more specific according to the editor under the mouse:
 |----------------|--------------------|
 | 3D View | live instance → selected/active object → its active or sole Geometry Nodes group |
 | Outliner | live instance → selected datablock; active object is the fallback when keymap context omits `selected_ids` |
-| Node Editor | live instance → edited node tree → group node under the mouse; active group node is the fallback |
+| Node Editor | live instance → edited node tree → node or frame under the mouse; active node/frame is the fallback |
 | Modifier Properties | live instance → active object → its active or sole Geometry Nodes group |
 | Other/no target | live instance only |
 
 Node-editor invocation uses the actual keyboard-event mouse coordinates for
-node hit-testing. This is why hovering a group node can produce a deeper
-handoff than merely focusing the editor. Blender does not expose equivalent
+node hit-testing. This is why hovering an individual node or frame can produce
+a deeper handoff than merely focusing the editor. Blender does not expose equivalent
 non-destructive row hit-testing for every Outliner keymap event, so Outliner
 resolution prefers the selected datablock and then the active object.
+
+Nodes and frames do not expose a durable UUID. Address Handoff uses the
+node's `.name`, which is unique within its owning node tree and therefore
+resolvable when paired with the tree address. A custom `.label` is copied too
+when present because it is the human-visible frame/node title, but labels are
+optional and not guaranteed unique. Agents must resolve by `.name` and treat
+`.label` as corroborating display context.
 
 Clipboard examples:
 
 ```text
 Blender target: "Soon Cages Manu Constraints.001" (:9879, pid 2103)
 Blender target: "Soon Cages Manu Constraints.001" (:9879, pid 2103) → Object: "Ricoh Cage handfeel test_v117" → Geometry Nodes: "Geometry Nodes.001"
-Blender target: "Soon Cages Manu Constraints.001" (:9879, pid 2103) → Geometry Nodes: "Geometry Nodes.001" → Selected Group: "3D Burn Medial Points"
+Blender target: "Soon Cages Manu Constraints.001" (:9879, pid 2103) → Geometry Nodes: "Geometry Nodes.001" → Referenced Node Group: "3D Burn Medial Points" → Node: "3D Burn Medial Points"
+Blender target: "Soon Cages Manu Constraints.001" (:9879, pid 2103) → Geometry Nodes: "Geometry Nodes.001" → Frame: "Frame.003" → Frame Label: "Burn until the nearest surface switches across the interior"
 ```
 
 The status notification names the deepest copied destination rather than an
@@ -246,6 +254,8 @@ abstract level count:
 Agent Handoff copied: Pid
 Agent Handoff copied: Pid -> Object
 Agent Handoff copied: Pid -> Node Group
+Agent Handoff copied: Pid -> Node
+Agent Handoff copied: Pid -> Frame
 ```
 
 When an Address Handoff appears in a prompt, agents must interpret it

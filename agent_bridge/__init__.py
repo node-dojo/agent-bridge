@@ -448,17 +448,48 @@ if _HAS_BPY:
         }
         return labels.get(getattr(tree, "bl_idname", ""), "Node Tree")
 
-    def _context_references(context) -> list[tuple[str, str]]:
+    def _node_under_mouse(context, event):
+        """Return the topmost node under the key event, when coordinates exist."""
+        if event is None or getattr(context, "region", None) is None:
+            return None
+        view2d = getattr(context.region, "view2d", None)
+        if view2d is None:
+            return None
+        tree = getattr(getattr(context, "space_data", None), "edit_tree", None)
+        tree = tree or getattr(getattr(context, "space_data", None), "node_tree", None)
+        if tree is None:
+            return None
+        x, y = view2d.region_to_view(event.mouse_region_x, event.mouse_region_y)
+        for node in reversed(list(tree.nodes)):
+            location = getattr(node, "location_absolute", node.location)
+            width = max(float(getattr(node, "width", 0.0)), float(node.dimensions.x))
+            height = max(float(getattr(node, "height", 0.0)), float(node.dimensions.y))
+            if location.x <= x <= location.x + width and location.y - height <= y <= location.y:
+                return node
+        return None
+
+    def _context_object(context):
+        """Resolve an object even when an editor keymap omits rich context members."""
+        obj = getattr(context, "active_object", None) or getattr(context, "object", None)
+        if obj is not None:
+            return obj
+        view_layer = getattr(context, "view_layer", None)
+        return getattr(getattr(view_layer, "objects", None), "active", None)
+
+    def _context_references(context, event=None) -> list[tuple[str, str]]:
         """Resolve the most specific useful Blender target in the focused editor."""
         area_type = getattr(getattr(context, "area", None), "type", "")
 
         if area_type == "NODE_EDITOR":
             tree = getattr(getattr(context, "space_data", None), "edit_tree", None)
+            tree = tree or getattr(getattr(context, "space_data", None), "node_tree", None)
             if tree is None:
-                return []
+                obj = _context_object(context)
+                return _object_references(obj) if obj is not None else []
             refs = [(_node_tree_label(tree), tree.name)]
-            active = getattr(getattr(tree, "nodes", None), "active", None)
-            nested = getattr(active, "node_tree", None) if active and active.select else None
+            hovered = _node_under_mouse(context, event)
+            active = hovered or getattr(getattr(tree, "nodes", None), "active", None)
+            nested = getattr(active, "node_tree", None) if active else None
             if nested is not None and nested != tree:
                 refs.append(("Selected Group", nested.name))
             return refs
@@ -466,6 +497,8 @@ if _HAS_BPY:
         if area_type == "OUTLINER":
             selected_ids = list(getattr(context, "selected_ids", ()) or ())
             selected = selected_ids[-1] if selected_ids else getattr(context, "id", None)
+            if selected is None:
+                selected = _context_object(context)
             if selected is None:
                 return []
             if isinstance(selected, bpy.types.Object):
@@ -477,18 +510,26 @@ if _HAS_BPY:
             return [(label, name)] if name else []
 
         if area_type == "VIEW_3D":
-            obj = getattr(context, "active_object", None)
+            obj = _context_object(context)
             if obj is not None and obj.select_get():
+                return _object_references(obj)
+
+        if area_type == "PROPERTIES":
+            pointer = getattr(context, "button_pointer", None)
+            if isinstance(pointer, bpy.types.NodeTree):
+                return [(_node_tree_label(pointer), pointer.name)]
+            obj = _context_object(context)
+            if obj is not None:
                 return _object_references(obj)
 
         return []
 
-    def _build_context_address(context, instance_only=False, entry=None) -> str:
+    def _build_context_address(context, instance_only=False, entry=None, event=None) -> str:
         parts = [_instance_address(entry)]
         if not instance_only:
             parts.extend(
                 f"{label}: {_quote_address_value(value)}"
-                for label, value in _context_references(context)
+                for label, value in _context_references(context, event=event)
             )
         return " → ".join(parts)
 
@@ -597,7 +638,7 @@ if _HAS_BPY:
         )  # type: ignore[valid-type]
         target_pid: IntProperty(default=0, options={"HIDDEN"})  # type: ignore[valid-type]
 
-        def execute(self, context):
+        def _copy(self, context, event=None):
             entry = reg.read(self.target_pid) if self.target_pid else None
             if self.target_pid and entry is None:
                 self.report({"WARNING"}, "That Blender instance is no longer live.")
@@ -606,6 +647,7 @@ if _HAS_BPY:
                 context,
                 instance_only=self.scope == "INSTANCE",
                 entry=entry,
+                event=event,
             )
             context.window_manager.clipboard = address
             specificity = address.count(" → ") + 1
@@ -615,6 +657,12 @@ if _HAS_BPY:
                 f"Copied Agent address ({specificity} level{plural}).",
             )
             return {"FINISHED"}
+
+        def invoke(self, context, event):
+            return self._copy(context, event=event)
+
+        def execute(self, context):
+            return self._copy(context)
 
     class AGENT_BRIDGE_Preferences(AddonPreferences):
         bl_idname = __package__
@@ -1116,6 +1164,7 @@ if _HAS_BPY:
             ("3D View", "VIEW_3D"),
             ("Outliner", "OUTLINER"),
             ("Node Editor", "NODE_EDITOR"),
+            ("Property Editor", "PROPERTIES"),
         ):
             keymap = keyconfig.keymaps.new(name=name, space_type=space_type)
             item = keymap.keymap_items.new(

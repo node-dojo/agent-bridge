@@ -24,7 +24,7 @@ def fake_context(area_type, **values):
 
 # Cmd+Shift+C has no Blender-default collision in the intended editors.
 default_config = bpy.context.window_manager.keyconfigs.default
-for keymap_name in ("3D View", "Outliner", "Node Editor"):
+for keymap_name in ("3D View", "Outliner", "Node Editor", "Property Editor"):
     keymap = default_config.keymaps.get(keymap_name)
     collisions = [] if keymap is None else [
         item
@@ -37,9 +37,9 @@ agent_bridge.register()
 try:
     assert agent_bridge.AGENT_BRIDGE_OT_copy_context_address.is_registered
     assert agent_bridge.AGENT_BRIDGE_Preferences.is_registered
-    assert len(agent_bridge._addon_keymaps) == 3
+    assert len(agent_bridge._addon_keymaps) == 4
     for keymap, item in agent_bridge._addon_keymaps:
-        assert keymap.name in {"3D View", "Outliner", "Node Editor"}
+        assert keymap.name in {"3D View", "Outliner", "Node Editor", "Property Editor"}
         assert item.idname == "agent_bridge.copy_context_address"
         assert item.type == "C" and item.shift and item.oskey
 
@@ -68,6 +68,17 @@ try:
     )
     assert 'Geometry Nodes: "Address Geometry"' in node_address
     assert 'Selected Group: "Nested Geometry"' in node_address
+
+    outliner_address = agent_bridge._build_context_address(
+        fake_context("OUTLINER", active_object=obj)
+    )
+    assert 'Object: "Address Object"' in outliner_address
+
+    properties_address = agent_bridge._build_context_address(
+        fake_context("PROPERTIES", active_object=obj)
+    )
+    assert 'Object: "Address Object"' in properties_address
+    assert 'Geometry Nodes: "Address Geometry"' in properties_address
 finally:
     agent_bridge.unregister()
 

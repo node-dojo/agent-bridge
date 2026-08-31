@@ -533,6 +533,24 @@ if _HAS_BPY:
             )
         return " → ".join(parts)
 
+    def _handoff_specificity(context, instance_only=False, event=None) -> str:
+        """Describe the deepest copied destination for the status notification."""
+        if instance_only:
+            return "Pid"
+        references = _context_references(context, event=event)
+        if not references:
+            return "Pid"
+        deepest = references[-1][0]
+        if deepest in {
+            "Geometry Nodes",
+            "Shader Nodes",
+            "Compositor Nodes",
+            "Node Tree",
+            "Selected Group",
+        }:
+            deepest = "Node Group"
+        return f"Pid -> {deepest}"
+
     def _asset_libraries() -> list[dict]:
         """Enumerate the asset libraries configured in this Blender instance."""
         out = []
@@ -621,7 +639,7 @@ if _HAS_BPY:
 
     class AGENT_BRIDGE_OT_copy_context_address(Operator):
         bl_idname = "agent_bridge.copy_context_address"
-        bl_label = "Copy Agent Address"
+        bl_label = "Copy Address Handoff"
         bl_description = (
             "Copy the live Blender target plus the focused object or node tree "
             "for pasting into an agent prompt"
@@ -650,11 +668,14 @@ if _HAS_BPY:
                 event=event,
             )
             context.window_manager.clipboard = address
-            specificity = address.count(" → ") + 1
-            plural = "s" if specificity != 1 else ""
             self.report(
                 {"INFO"},
-                f"Copied Agent address ({specificity} level{plural}).",
+                "Agent Handoff copied: "
+                + _handoff_specificity(
+                    context,
+                    instance_only=self.scope == "INSTANCE",
+                    event=event,
+                ),
             )
             return {"FINISHED"}
 
@@ -670,7 +691,7 @@ if _HAS_BPY:
         def draw(self, context):
             layout = self.layout
             layout.label(
-                text="Copy Agent Address shortcuts",
+                text="Address Handoff shortcuts",
                 icon="COPYDOWN",
             )
             layout.label(

@@ -57,6 +57,9 @@ try:
     )
     assert 'Object: "Address Object"' in object_address
     assert 'Geometry Nodes: "Address Geometry"' in object_address
+    assert agent_bridge._handoff_specificity(
+        fake_context("VIEW_3D", active_object=obj)
+    ) == "Pid -> Node Group"
 
     nested = bpy.data.node_groups.new("Nested Geometry", "GeometryNodeTree")
     group_node = group.nodes.new("GeometryNodeGroup")
@@ -68,6 +71,9 @@ try:
     )
     assert 'Geometry Nodes: "Address Geometry"' in node_address
     assert 'Selected Group: "Nested Geometry"' in node_address
+    assert agent_bridge._handoff_specificity(
+        fake_context("NODE_EDITOR", space_data=SimpleNamespace(edit_tree=group))
+    ) == "Pid -> Node Group"
 
     outliner_address = agent_bridge._build_context_address(
         fake_context("OUTLINER", active_object=obj)
@@ -79,6 +85,12 @@ try:
     )
     assert 'Object: "Address Object"' in properties_address
     assert 'Geometry Nodes: "Address Geometry"' in properties_address
+    assert agent_bridge._handoff_specificity(
+        fake_context("PROPERTIES", active_object=obj)
+    ) == "Pid -> Node Group"
+    assert agent_bridge._handoff_specificity(
+        fake_context("EMPTY"), instance_only=True
+    ) == "Pid"
 finally:
     agent_bridge.unregister()
 

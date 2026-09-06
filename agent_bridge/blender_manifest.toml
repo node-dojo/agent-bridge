@@ -36,7 +36,9 @@ files = "Writes this instance's connection info under ~/.blender-pairs"
 # Blender entry points).
 [build]
 paths = [
+  "AGENT.md",
   "__init__.py",
+  "references/BLENDER_5_2_VSE_AND_NODES.md",
   "serve_helpers.py",
   "registry.py",
   "resolver.py",

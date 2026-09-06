@@ -29,7 +29,15 @@ def build_register_payload(pid: int, port: int, host: str, blendfile: str) -> di
 # ---------------------------------------------------------------------------
 
 # Filenames we treat as "agent instruction" documents.
-_INSTRUCTION_FILENAMES = ("CLAUDE.md", "AGENTS.md", "claude.md", "agents.md")
+_INSTRUCTION_FILENAMES = (
+    "AGENT.md",
+    "AGENTS.md",
+    "agent.md",
+    "agents.md",
+    # Compatibility fallbacks for existing client-specific projects.
+    "CLAUDE.md",
+    "claude.md",
+)
 
 # Directory of THIS add-on. Used to surface the Agent Bridge tier's own docs.
 _THIS_ADDON_DIR = Path(__file__).resolve().parent
@@ -37,7 +45,7 @@ _THIS_ADDON_DIR = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
 # Anchor paths — single source of truth, environment-variable overridable.
-# Every user-facing path claim in this add-on (primer, drift map, CLAUDE.md)
+# Every user-facing path claim in this add-on (primer, drift map, AGENT.md)
 # resolves through here, so a folder rename or machine migration is a
 # one-var edit rather than a doc-wide search-and-replace.
 # ---------------------------------------------------------------------------
@@ -267,11 +275,14 @@ def discover_instruction_files(project_dir: Path | None) -> list[dict]:
 
     # --- Global (user-level) ------------------------------------------------
     global_candidates = [
+        home / "AGENT.md",
+        home / "AGENTS.md",
+        home / ".config" / "agent" / "AGENT.md",
+        # Legacy client-specific locations remain readable as fallbacks.
         home / ".claude" / "CLAUDE.md",
         home / ".config" / "claude" / "CLAUDE.md",
         home / "CLAUDE.md",
         home / ".claude" / "AGENTS.md",
-        home / "AGENTS.md",
     ]
     for p in global_candidates:
         if p.exists() and p.is_file():
@@ -287,13 +298,16 @@ def discover_instruction_files(project_dir: Path | None) -> list[dict]:
                 "label": name,
                 "path": str(candidate),
             })
-            break  # first hit wins; CLAUDE.md preferred over AGENTS.md
+            break  # first hit wins; agent-agnostic guidance is preferred
 
-    # --- Project (blend file directory + its .claude/) ---------------------
+    # --- Project (blend directory, agent-first with legacy fallbacks) ------
     if project_dir is not None:
         proj_candidates = [
-            project_dir / "CLAUDE.md",
+            project_dir / "AGENT.md",
             project_dir / "AGENTS.md",
+            project_dir / ".agent" / "AGENT.md",
+            # Legacy client-specific project instructions remain compatible.
+            project_dir / "CLAUDE.md",
             project_dir / ".claude" / "CLAUDE.md",
             project_dir / ".claude" / "AGENTS.md",
         ]
@@ -476,17 +490,108 @@ if _HAS_BPY:
         view_layer = getattr(context, "view_layer", None)
         return getattr(getattr(view_layer, "objects", None), "active", None)
 
+    def _context_scene(context):
+        """Resolve the scene owned by the focused editor/window."""
+        scene = getattr(context, "scene", None)
+        if scene is not None:
+            return scene
+        return getattr(getattr(context, "window", None), "scene", None)
+
+    def _displayed_strips(sequence_editor):
+        """Return the strips visible at the currently edited meta level."""
+        meta_stack = list(getattr(sequence_editor, "meta_stack", ()) or ())
+        if meta_stack:
+            return list(getattr(meta_stack[-1], "strips", ()) or ()), meta_stack
+        return list(getattr(sequence_editor, "strips", ()) or ()), meta_stack
+
+    def _strip_under_mouse(context, event, sequence_editor):
+        """Return the VSE timeline strip below the key event without changing selection."""
+        if event is None or getattr(context, "region", None) is None:
+            return None
+        space = getattr(context, "space_data", None)
+        if getattr(space, "view_type", "") not in {"SEQUENCER", "SEQUENCER_PREVIEW"}:
+            return None
+        view2d = getattr(context.region, "view2d", None)
+        if view2d is None:
+            return None
+        frame, channel_y = view2d.region_to_view(
+            event.mouse_region_x,
+            event.mouse_region_y,
+        )
+        channel = int(channel_y)
+        # Match Blender 5.2's visible strip body bounds. The small gaps between
+        # channels intentionally do not resolve to either neighboring strip.
+        if not channel + 0.05 <= channel_y <= channel + 0.95:
+            return None
+        strips, _meta_stack = _displayed_strips(sequence_editor)
+        for strip in reversed(strips):
+            if (
+                strip.channel == channel
+                and strip.frame_final_start <= frame <= strip.frame_final_end
+            ):
+                return strip
+        return None
+
+    def _strip_address_label(strip) -> str:
+        """Return the Blender-facing strip kind used in an Address Handoff."""
+        rna_name = getattr(getattr(strip, "bl_rna", None), "name", "")
+        if rna_name and rna_name.endswith("Strip"):
+            return rna_name
+        strip_type = str(getattr(strip, "type", "") or "").replace("_", " ").title()
+        return f"{strip_type} Strip" if strip_type else "Strip"
+
+    def _sequence_editor_references(context, event=None) -> list[tuple[str, str]]:
+        """Describe the owning scene, edited meta path, and focused VSE strip."""
+        scene = _context_scene(context)
+        if scene is None:
+            return []
+        refs = [("Scene", scene.name)]
+        sequence_editor = getattr(scene, "sequence_editor", None)
+        if sequence_editor is None:
+            return refs
+        _strips, meta_stack = _displayed_strips(sequence_editor)
+        refs.extend(("Meta Strip", meta.name) for meta in meta_stack)
+        strip = _strip_under_mouse(context, event, sequence_editor)
+        if strip is None:
+            strip = getattr(context, "active_strip", None)
+        if strip is None:
+            strip = getattr(sequence_editor, "active_strip", None)
+        if strip is not None:
+            refs.append((_strip_address_label(strip), strip.name))
+        return refs
+
+    def _node_editor_scene(context, tree):
+        """Return the scene that owns a root compositor tree, when applicable."""
+        space = getattr(context, "space_data", None)
+        owner = getattr(space, "id", None)
+        if isinstance(owner, bpy.types.Scene):
+            return owner
+        scene = _context_scene(context)
+        if scene is not None and (
+            tree is None or getattr(scene, "compositing_node_group", None) == tree
+        ):
+            return scene
+        return None
+
     def _context_references(context, event=None) -> list[tuple[str, str]]:
         """Resolve the most specific useful Blender target in the focused editor."""
         area_type = getattr(getattr(context, "area", None), "type", "")
 
         if area_type == "NODE_EDITOR":
-            tree = getattr(getattr(context, "space_data", None), "edit_tree", None)
-            tree = tree or getattr(getattr(context, "space_data", None), "node_tree", None)
+            space = getattr(context, "space_data", None)
+            tree = getattr(space, "edit_tree", None)
+            tree = tree or getattr(space, "node_tree", None)
+            refs = []
+            if getattr(space, "tree_type", "") == "CompositorNodeTree":
+                scene = _node_editor_scene(context, tree)
+                if scene is not None:
+                    refs.append(("Scene", scene.name))
             if tree is None:
+                if refs:
+                    return refs
                 obj = _context_object(context)
                 return _object_references(obj) if obj is not None else []
-            refs = [(_node_tree_label(tree), tree.name)]
+            refs.append((_node_tree_label(tree), tree.name))
             hovered = _node_under_mouse(context, event)
             active = hovered or getattr(getattr(tree, "nodes", None), "active", None)
             nested = getattr(active, "node_tree", None) if active else None
@@ -498,6 +603,9 @@ if _HAS_BPY:
                 if active.label:
                     refs.append((f"{kind} Label", active.label))
             return refs
+
+        if area_type == "SEQUENCE_EDITOR":
+            return _sequence_editor_references(context, event=event)
 
         if area_type == "OUTLINER":
             selected_ids = list(getattr(context, "selected_ids", ()) or ())
@@ -529,12 +637,20 @@ if _HAS_BPY:
 
         return []
 
+    def _safe_context_references(context, event=None) -> list[tuple[str, str]]:
+        """Resolve optional detail without ever losing the instance handoff."""
+        try:
+            return _context_references(context, event=event)
+        except Exception as ex:  # pylint: disable=broad-exception-caught
+            print(f"[Agent Bridge] Context handoff fell back to live instance: {ex}")
+            return []
+
     def _build_context_address(context, instance_only=False, entry=None, event=None) -> str:
         parts = [_instance_address(entry)]
         if not instance_only:
             parts.extend(
                 f"{label}: {_quote_address_value(value)}"
-                for label, value in _context_references(context, event=event)
+                for label, value in _safe_context_references(context, event=event)
             )
         return " → ".join(parts)
 
@@ -542,7 +658,7 @@ if _HAS_BPY:
         """Describe the deepest copied destination for the status notification."""
         if instance_only:
             return "Pid"
-        references = _context_references(context, event=event)
+        references = _safe_context_references(context, event=event)
         if not references:
             return "Pid"
         deepest = references[-1][0]
@@ -558,6 +674,10 @@ if _HAS_BPY:
             deepest = "Node"
         elif deepest in {"Frame Label", "Frame"}:
             deepest = "Frame"
+        elif deepest == "Scene":
+            deepest = "Scene"
+        elif deepest == "Strip" or deepest.endswith(" Strip"):
+            deepest = "Strip"
         return f"Pid -> {deepest}"
 
     def _asset_libraries() -> list[dict]:
@@ -650,7 +770,7 @@ if _HAS_BPY:
         bl_idname = "agent_bridge.copy_context_address"
         bl_label = "Copy Address Handoff"
         bl_description = (
-            "Copy the live Blender target plus the focused object or node tree "
+            "Copy the live Blender target plus the focused scene, strip, object, or node tree "
             "for pasting into an agent prompt"
         )
         bl_options = {"REGISTER"}
@@ -737,7 +857,7 @@ if _HAS_BPY:
         bl_label = "Launch Claude Terminal Here"
         bl_description = (
             "Open a Terminal at this .blend's project directory and start Claude Code with a "
-            "primed system prompt (global rules + add-on docs + local CLAUDE.md)."
+            "primed system prompt from the available agent instruction files."
         )
         bl_options = {"REGISTER"}
 
@@ -798,7 +918,7 @@ if _HAS_BPY:
                              addons: list[dict],
                              blend_projects: list[dict],
                              asset_libs: list[dict]) -> str:
-        """Produce a markdown drift-check report Claude can read verbatim."""
+        """Produce a markdown drift-check report an agent can read verbatim."""
         import datetime
         lines = ["# Agent Bridge — drift map", ""]
         try:
@@ -1136,7 +1256,7 @@ if _HAS_BPY:
             project_dir = Path(blendfile).parent if blendfile else None
             docs = discover_instruction_files(project_dir)
             if not docs:
-                instr_box.label(text="No CLAUDE.md / AGENTS.md found.", icon="DOT")
+                instr_box.label(text="No AGENT.md / AGENTS.md found.", icon="DOT")
                 instr_box.label(text="Drop one in the .blend's folder.", icon="INFO")
             else:
                 # Group by scope in a stable order (Global → Agent Bridge → Project).
@@ -1194,7 +1314,9 @@ if _HAS_BPY:
             ("3D View", "VIEW_3D"),
             ("Outliner", "OUTLINER"),
             ("Node Editor", "NODE_EDITOR"),
+            ("Sequencer", "SEQUENCE_EDITOR"),
             ("Property Editor", "PROPERTIES"),
+            ("Window", "EMPTY"),
         ):
             keymap = keyconfig.keymaps.new(name=name, space_type=space_type)
             item = keymap.keymap_items.new(
